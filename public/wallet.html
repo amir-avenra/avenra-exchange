@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Wallet — AVENRA Exchange</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="logo">AVENRA <span>Exchange</span><small>SIMULATED · NO REAL MONEY</small></div>
+  <div class="spacer"></div>
+  <button class="uid-chip" id="uid-chip" title="Click to copy UID">UID: <b id="uid-value">…</b></button>
+  <button class="total-balance" id="total-balance" title="Total balance">
+    <small>Total balance</small>
+    <b id="total-balance-value">$0.00</b>
+  </button>
+  <a class="nav-link" href="/">Trade</a>
+</header>
+
+<main>
+  <div class="wallet-total">
+    <div>
+      <div style="color:var(--muted);font-size:13px;">Total balance (estimated)</div>
+      <b id="wallet-total-value">$0.00</b>
+    </div>
+    <div style="color:var(--muted);font-size:12px;">Values use live Binance prices</div>
+  </div>
+
+  <div class="panel">
+    <h3>Balances</h3>
+    <table class="wallet-table">
+      <thead><tr><th>Asset</th><th>Balance</th><th>Price</th><th>Value (USDT)</th></tr></thead>
+      <tbody id="wallet-body"><tr><td colspan="4" class="empty">Loading…</td></tr></tbody>
+    </table>
+  </div>
+  <p class="note">Simulated balances only. There are no deposits or withdrawals — the admin credits balances manually (tap "Total balance" 5 times, or Ctrl/Cmd+Shift+A).</p>
+</main>
+
+<!-- Hidden admin panel: tap "Total balance" 5 times, or Ctrl/Cmd+Shift+A -->
+<div id="admin-modal" class="modal hidden">
+  <div class="modal-card">
+    <button class="close-x" title="Close">✕</button>
+    <h2>Admin Panel</h2>
+    <p>Look up an account by UID and credit balances manually.</p>
+    <div class="field">
+      <label>Account UID (8 digits)</label>
+      <div class="row">
+        <input id="admin-uid" type="text" inputmode="numeric" maxlength="8" placeholder="12345678" style="flex:1">
+        <button id="admin-lookup" class="mini-btn neutral" style="padding:8px 14px;">Lookup</button>
+      </div>
+    </div>
+    <div id="admin-account"></div>
+    <div id="admin-credit-box" class="hidden">
+      <div class="row" style="margin-top:12px;">
+        <div class="field" style="flex:1;">
+          <label>Asset</label>
+          <select id="admin-asset">
+            <option>USDT</option><option>BTC</option><option>ETH</option>
+            <option>BNB</option><option>SOL</option><option>XRP</option>
+          </select>
+        </div>
+        <div class="field" style="flex:2;">
+          <label>Amount to credit</label>
+          <input id="admin-amount" type="number" step="any" min="0" placeholder="1000">
+        </div>
+      </div>
+      <button id="admin-credit" class="submit buy" style="background:var(--accent);color:#111;">Credit Balance</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script src="/js/common.js"></script>
+<script src="/js/admin.js"></script>
+<script src="/js/wallet.js"></script>
+</body>
+</html>

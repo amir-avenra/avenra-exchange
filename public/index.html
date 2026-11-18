@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AVENRA Exchange — Simulated Trading</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="logo">AVENRA <span>Exchange</span><small>SIMULATED · NO REAL MONEY</small></div>
+  <div class="spacer"></div>
+  <button class="uid-chip" id="uid-chip" title="Click to copy UID">UID: <b id="uid-value">…</b></button>
+  <button class="total-balance" id="total-balance" title="Total balance">
+    <small>Total balance</small>
+    <b id="total-balance-value">$0.00</b>
+  </button>
+  <a class="nav-link" href="/wallet.html">Wallet</a>
+</header>
+
+<main>
+  <div class="trade-layout">
+    <div class="left">
+      <div class="symbol-tabs">
+        <button class="symbol-tab active" data-symbol="BTCUSDT">BTC/USDT<span class="p">—</span></button>
+        <button class="symbol-tab" data-symbol="ETHUSDT">ETH/USDT<span class="p">—</span></button>
+        <button class="symbol-tab" data-symbol="BNBUSDT">BNB/USDT<span class="p">—</span></button>
+        <button class="symbol-tab" data-symbol="SOLUSDT">SOL/USDT<span class="p">—</span></button>
+        <button class="symbol-tab" data-symbol="XRPUSDT">XRP/USDT<span class="p">—</span></button>
+        <span style="margin-left:auto;color:var(--muted);font-size:13px;">Last: <b id="last-price" style="color:var(--text);">—</b></span>
+      </div>
+
+      <div class="panel">
+        <div class="chart-toolbar">
+          <button class="tf-btn active" data-tf="1m">1m</button>
+          <button class="tf-btn" data-tf="5m">5m</button>
+          <button class="tf-btn" data-tf="15m">15m</button>
+          <button class="tf-btn" data-tf="30m">30m</button>
+          <button class="tf-btn" data-tf="1h">1h</button>
+          <button class="tf-btn" data-tf="4h">4h</button>
+          <button class="tf-btn" data-tf="1d">1d</button>
+          <div class="toolbar-right">
+            <span class="ma-legend">
+              <span><i style="background:#f0b90b"></i>MA5</span>
+              <span><i style="background:#2962ff"></i>MA10</span>
+              <span><i style="background:#e040fb"></i>MA30</span>
+            </span>
+            <label><input type="checkbox" id="macd-toggle" checked> MACD</label>
+          </div>
+        </div>
+        <div id="chart"></div>
+        <div id="macd-chart"></div>
+      </div>
+
+      <div class="panels-row">
+        <div class="panel">
+          <h3>Spot Trading · <span id="spot-base">BTC</span>/USDT</h3>
+          <div class="seg">
+            <button id="spot-buy-btn" class="buy-on">Buy</button>
+            <button id="spot-sell-btn">Sell</button>
+          </div>
+          <div class="seg">
+            <button id="spot-market-btn" class="type-on">Market</button>
+            <button id="spot-limit-btn">Limit</button>
+          </div>
+          <div class="field">
+            <label>Price (USDT)</label>
+            <input id="spot-price" type="number" step="any" min="0" placeholder="Market price" disabled>
+          </div>
+          <div class="field">
+            <label>Quantity</label>
+            <input id="spot-qty" type="number" step="any" min="0" placeholder="0.00">
+          </div>
+          <div class="pct-row">
+            <button data-pct="25">25%</button>
+            <button data-pct="50">50%</button>
+            <button data-pct="75">75%</button>
+            <button data-pct="100">100%</button>
+          </div>
+          <div class="info-line"><span id="spot-available">Available: —</span><span id="spot-total">—</span></div>
+          <div class="info-line"><span>Fee</span><b>0.1%</b></div>
+          <button id="spot-submit" class="submit buy">Buy BTC</button>
+        </div>
+
+        <div class="panel">
+          <h3>Futures (Perpetual) · <span id="fut-base">BTC</span>/USDT</h3>
+          <div class="seg">
+            <button id="fut-long-btn" class="long-on">Long</button>
+            <button id="fut-short-btn">Short</button>
+          </div>
+          <div class="field">
+            <label>Leverage: <b id="fut-lev-label">10x</b></label>
+            <input id="fut-lev-range" type="range" min="1" max="50" value="10" style="width:100%">
+          </div>
+          <div class="pct-row">
+            <button class="lev-btn" data-lev="1">1x</button>
+            <button class="lev-btn" data-lev="5">5x</button>
+            <button class="lev-btn type-on" data-lev="10">10x</button>
+            <button class="lev-btn" data-lev="20">20x</button>
+            <button class="lev-btn" data-lev="50">50x</button>
+          </div>
+          <div class="field">
+            <label>Quantity</label>
+            <input id="fut-qty" type="number" step="any" min="0" placeholder="0.00">
+          </div>
+          <div class="info-line"><span id="fut-available">Available: —</span><span>Isolated margin</span></div>
+          <div class="info-line"><span>Entry (mark)</span><b id="fut-entry">—</b></div>
+          <div class="info-line"><span>Margin required</span><b id="fut-margin">—</b></div>
+          <div class="info-line"><span>Est. liquidation</span><b id="fut-liq">—</b></div>
+          <button id="fut-submit" class="submit long">Open Long BTC</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h3>Open Orders</h3>
+        <table>
+          <thead><tr><th>Pair</th><th>Side</th><th>Type</th><th>Price</th><th>Qty</th><th></th></tr></thead>
+          <tbody id="open-orders-body"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
+        </table>
+      </div>
+
+      <div class="panel">
+        <h3>Futures Positions</h3>
+        <table>
+          <thead><tr><th>Pair</th><th>Side</th><th>Entry</th><th>Mark</th><th>Liq. Price</th><th>Qty</th><th>uPnL (ROE)</th><th></th></tr></thead>
+          <tbody id="positions-body"><tr><td colspan="8" class="empty">Loading…</td></tr></tbody>
+        </table>
+      </div>
+
+      <div class="panel">
+        <h3>Trade History</h3>
+        <table>
+          <thead><tr><th>Time</th><th>Side</th><th>Price</th><th>Qty</th><th>Fee</th></tr></thead>
+          <tbody id="trade-history-body"><tr><td colspan="5" class="empty">Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <aside class="right">
+      <div class="panel">
+        <h3>Order Book</h3>
+        <div class="book-head"><span>Price</span><span>Amount</span><span>Total</span></div>
+        <div class="book-side book-asks" id="asks"></div>
+        <div class="book-mid" id="book-mid">—</div>
+        <div class="book-side book-bids" id="bids"></div>
+      </div>
+      <div class="panel">
+        <h3>Recent Trades</h3>
+        <div class="book-head"><span>Price</span><span>Amount</span><span>Time</span></div>
+        <div class="trade-feed" id="trade-feed"></div>
+      </div>
+    </aside>
+  </div>
+  <p class="note">Simulated exchange for practice only. Prices stream live from Binance public market data. No real money, no deposits or withdrawals — balances are credited manually by the admin.</p>
+</main>
+
+<!-- Hidden admin panel: tap "Total balance" 5 times, or Ctrl/Cmd+Shift+A -->
+<div id="admin-modal" class="modal hidden">
+  <div class="modal-card">
+    <button class="close-x" title="Close">✕</button>
+    <h2>Admin Panel</h2>
+    <p>Look up an account by UID and credit balances manually.</p>
+    <div class="field">
+      <label>Account UID (8 digits)</label>
+      <div class="row">
+        <input id="admin-uid" type="text" inputmode="numeric" maxlength="8" placeholder="12345678" style="flex:1">
+        <button id="admin-lookup" class="mini-btn neutral" style="padding:8px 14px;">Lookup</button>
+      </div>
+    </div>
+    <div id="admin-account"></div>
+    <div id="admin-credit-box" class="hidden">
+      <div class="row" style="margin-top:12px;">
+        <div class="field" style="flex:1;">
+          <label>Asset</label>
+          <select id="admin-asset">
+            <option>USDT</option><option>BTC</option><option>ETH</option>
+            <option>BNB</option><option>SOL</option><option>XRP</option>
+          </select>
+        </div>
+        <div class="field" style="flex:2;">
+          <label>Amount to credit</label>
+          <input id="admin-amount" type="number" step="any" min="0" placeholder="1000">
+        </div>
+      </div>
+      <button id="admin-credit" class="submit buy" style="background:var(--accent);color:#111;">Credit Balance</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+<script src="/js/common.js"></script>
+<script src="/js/admin.js"></script>
+<script src="/js/trade.js"></script>
+</body>
+</html>
