@@ -2,14 +2,16 @@
 // Serves the static frontend from /public and the JSON API under /api.
 // Postgres is the default store (DATABASE_URL). Without DATABASE_URL the
 // server boots with an in-memory store for local smoke tests only.
+require('dotenv').config(); // Loads DATABASE_URL from a .env file when present (e.g. hosts with no env-var settings).
 const path = require('path');
 const express = require('express');
 const { getStore } = require('./src/db');
 const prices = require('./src/prices');
 const engine = require('./src/engine');
 const { createRouter } = require('./src/routes');
+const { startBot } = require('./src/bot');
 
-const PORT = Number(process.env.PORT || 3000);
+const PORT = Number(process.env.PORT || process.env.SERVER_PORT || 3000);
 
 async function main() {
   const store = getStore();
@@ -73,6 +75,10 @@ function startServer(store) {
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`[server] listening on http://0.0.0.0:${PORT} (store: ${store.mode})`);
+    // Telegram bot: answers /start with the welcome message + mini-app button.
+    // Long polling, no webhook needed; runs in the background and can never
+    // crash the exchange (its errors are caught inside the loop).
+    startBot();
   });
 }
 

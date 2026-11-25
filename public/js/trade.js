@@ -1,38 +1,47 @@
 // Trading page: live chart (Binance), order book, recent trades,
 // spot market/limit, futures with leverage, open orders, history.
+// KCEX-style mobile layout: pair cards, Spot/Futures switch, book/trades tabs.
 (function () {
-  const BINANCE_REST = ['https://api.binance.com', 'https://data-api.binance.vision'];
+  // All Binance market data goes through the server's /api/market/* proxy:
+  // api.binance.com and the Binance websocket are blocked on some visitor
+  // networks (e.g. Iranian IPs), while the server reaches Binance fine.
+  // Live updates use REST polling as the primary path; the websocket below
+  // is only a best-effort enhancement and must never break the page.
   const BINANCE_WS = ['wss://stream.binance.com:9443', 'wss://data-stream.binance.vision'];
 
   const state = {
     symbol: 'BTCUSDT',
-    interval: '1m',
+    interval: '15m',
+    mode: 'spot',
     klines: [], // {time, open, high, low, close, volume}
     lastPrice: null,
+    ticker24: {}, // symbol -> 24h change %
     balances: {},
     serverPrices: {},
+    openPositions: [], // open futures positions for the current uid
+    recentTrades: [], // own filled trades (for B/S chart markers)
     spotSide: 'buy',
     spotType: 'market',
     futSide: 'long',
     leverage: 10,
+    showMA: true,
+    showVol: true,
+    showMacd: true,
+    psMode: 'linear', // price-scale mode: 'linear' (manual) or 'log'
+    autoScale: true, // KCEX default: price axis refits to visible candles on zoom
     ws: null,
     wsHostIdx: 0,
+    wsBackoff: 3000,
     wsReconnectTimer: null,
   };
 
-  // ---------- Binance helpers (REST with host fallback) ----------
-  async function binanceRest(path) {
-    let lastErr = null;
-    for (const host of BINANCE_REST) {
-      try {
-        const res = await fetch(`${host}${path}`, { signal: AbortSignal.timeout(8000) });
-        if (!res.ok) { lastErr = new Error(`HTTP ${res.status}`); continue; }
-        return await res.json();
-      } catch (err) {
-        lastErr = err;
-      }
-    }
-    throw lastErr || new Error('Binance unreachable');
+  // ---------- market data (same-origin server proxy) ----------
+  async function marketRest(path) {
+    // 25s (must exceed the server's 20s proxy timeout): slow VPNs need
+    // more than 8s for the bigger payloads (ticker24, 300 candles).
+    const res = await fetch(path, { signal: AbortSignal.timeout(25000) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
   }
 
   // ---------- indicators ----------
@@ -67,22 +76,53 @@
 
   // ---------- chart ----------
   let chart, candleSeries, volumeSeries, ma5Series, ma10Series, ma30Series;
+  let markPriceLine = null; // dashed "Mark" line at the live price
   let macdChart, macdHist, macdDif, macdDea;
 
   function initChart() {
     const el = document.getElementById('chart');
+    if (typeof LightweightCharts === 'undefined') {
+      // Chart library missing (e.g. CDN blocked): trading still works,
+      // only the chart stays empty. Never let this kill the whole app.
+      if (el) el.textContent = 'Chart unavailable';
+      return;
+    }
     chart = LightweightCharts.createChart(el, {
       width: el.clientWidth,
-      height: 420,
+      height: el.clientHeight || 320,
       layout: { background: { color: '#12161c' }, textColor: '#d1d4dc', fontSize: 12 },
       grid: { vertLines: { color: 'rgba(42,46,57,0.5)' }, horzLines: { color: 'rgba(42,46,57,0.5)' } },
-      timeScale: { timeVisible: true, secondsVisible: false, borderColor: '#2a2e39' },
-      rightPriceScale: { borderColor: '#2a2e39' },
+      timeScale: { timeVisible: true, secondsVisible: false, borderColor: '#2a2e39', rightOffset: 5 },
+      // Chart settings exactly like KCEX (TradingView chart): auto-scale ON
+      // by default — zooming refits the price axis to the visible candles.
+      // The Auto toggle freezes the axis (manual mode); Log/% switch the
+      // scale mode. Vertical drag moves the whole chart up/down, pinch zooms.
+      rightPriceScale: {
+        borderColor: '#2a2e39',
+        mode: state.psMode === 'log' ? LightweightCharts.PriceScaleMode.Logarithmic : state.psMode === 'percent' ? LightweightCharts.PriceScaleMode.Percentage : LightweightCharts.PriceScaleMode.Normal,
+        autoScale: state.autoScale,
+      },
+      handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
+      handleScale: { mouseWheel: true, pinch: true, axisPressedMouseMove: true, axisDoubleClickReset: true },
       crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
     });
+    window.__chart = chart; // debug handle (price-scale mode, overlays)
     candleSeries = chart.addCandlestickSeries({
       upColor: '#0ecb81', downColor: '#f6465d',
       wickUpColor: '#0ecb81', wickDownColor: '#f6465d', borderVisible: false,
+      // No built-in last-price line/label: the Mark line below replaces it.
+      priceLineVisible: false, lastValueVisible: false,
+    });
+    window.__candleSeries = candleSeries;
+    // TradingView-style current-price line: a dashed line at the live mark
+    // with a "Mark" axis label, always visible (even with no position open).
+    // Grabbing the price axis turns auto-scale off (TradingView behaviour)
+    // so the manual scale the user drags stays put.
+    el.addEventListener('pointerdown', (e) => {
+      if (!chart) return;
+      const rect = el.getBoundingClientRect();
+      const axisW = chart.priceScale('right').width() || 0;
+      if (e.clientX >= rect.right - axisW) setAutoScale(false);
     });
     candleSeries.priceScale().applyOptions({ scaleMargins: { top: 0.08, bottom: 0.18 } });
     volumeSeries = chart.addHistogramSeries({
@@ -99,7 +139,7 @@
     const macdEl = document.getElementById('macd-chart');
     macdChart = LightweightCharts.createChart(macdEl, {
       width: macdEl.clientWidth,
-      height: 130,
+      height: macdEl.clientHeight || 110,
       layout: { background: { color: '#12161c' }, textColor: '#d1d4dc', fontSize: 11 },
       grid: { vertLines: { color: 'rgba(42,46,57,0.5)' }, horzLines: { color: 'rgba(42,46,57,0.5)' } },
       timeScale: { timeVisible: true, secondsVisible: false, borderColor: '#2a2e39' },
@@ -112,12 +152,36 @@
     // Keep both charts in sync when scrolling/zooming the main one.
     chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
       if (range) macdChart.timeScale().setVisibleLogicalRange(range);
+      updatePositionBadge(); // entry line moved on screen: re-pin the badge
     });
 
     new ResizeObserver(() => {
-      chart.applyOptions({ width: el.clientWidth });
-      macdChart.applyOptions({ width: macdEl.clientWidth });
+      chart.applyOptions({ width: el.clientWidth, height: el.clientHeight });
+      if (!macdEl.classList.contains('hidden')) {
+        macdChart.applyOptions({ width: macdEl.clientWidth, height: macdEl.clientHeight });
+      }
     }).observe(el);
+  }
+
+  // Create the chart on first use. Home is the landing view, so the chart
+  // container is hidden at startup and would init at zero width; when the
+  // Trade view opens, build it (or re-fit it) and paint any data already
+  // loaded by the background polling.
+  function ensureChart() {
+    if (!chart) {
+      initChart();
+      if (state.klines.length && candleSeries) {
+        candleSeries.setData(state.klines);
+        refreshIndicators();
+        updateOhlc();
+        refreshPositionOverlay();
+        refreshTradeMarkers();
+        fitPriceScale();
+      }
+    } else {
+      const el = document.getElementById('chart');
+      if (el) chart.applyOptions({ width: el.clientWidth, height: el.clientHeight });
+    }
   }
 
   function setMaSeries(series, closes, period) {
@@ -128,6 +192,7 @@
 
   function refreshIndicators() {
     if (!state.klines.length) return;
+    if (!candleSeries) return;
     const closes = state.klines.map((k) => k.close);
     setMaSeries(ma5Series, closes, 5);
     setMaSeries(ma10Series, closes, 10);
@@ -139,36 +204,284 @@
     macdDea.setData(dea.map((v, i) => ({ time: times[i], value: v })));
   }
 
-  async function loadKlines() {
-    try {
-      const raw = await binanceRest(`/api/v3/klines?symbol=${state.symbol}&interval=${state.interval}&limit=300`);
-      state.klines = raw.map((k) => ({
-        time: Math.floor(k[0] / 1000),
-        open: Number(k[1]), high: Number(k[2]), low: Number(k[3]), close: Number(k[4]),
-        volume: Number(k[5]),
-      }));
-      candleSeries.setData(state.klines);
-      volumeSeries.setData(state.klines.map((k) => ({
-        time: k.time, value: k.volume, color: k.close >= k.open ? 'rgba(14,203,129,0.5)' : 'rgba(246,70,93,0.5)',
-      })));
-      refreshIndicators();
-      const last = state.klines[state.klines.length - 1];
-      if (last) updateLastPrice(last.close);
-    } catch (err) {
-      toast('Chart data unavailable: ' + err.message, 'err');
+  // OHLC legend under the indicator chips. Flex-wrap with nowrap items:
+  // it wraps onto extra lines on narrow screens instead of overlapping.
+  function updateOhlc() {
+    const el = document.getElementById('ohlc');
+    if (!el || !state.klines.length) return;
+    const last = state.klines[state.klines.length - 1];
+    const closes = state.klines.map((k) => k.close);
+    const maVal = (period) => {
+      const v = sma(closes, period);
+      return v.length ? v[v.length - 1] : null;
+    };
+    const chg = last.open ? ((last.close - last.open) / last.open) * 100 : 0;
+    const dateStr = new Date(last.time * 1000).toLocaleString('en-US', {
+      month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false,
+    });
+    const ma5 = maVal(5), ma10 = maVal(10), ma30 = maVal(30);
+    const chgCls = chg >= 0 ? 'num-up' : 'num-down';
+    el.innerHTML =
+      `<span class="oh-date">${dateStr}</span>` +
+      `<span>O <b>${fmtPrice(state.symbol, last.open)}</b></span>` +
+      `<span>H <b>${fmtPrice(state.symbol, last.high)}</b></span>` +
+      `<span>L <b>${fmtPrice(state.symbol, last.low)}</b></span>` +
+      `<span>C <b>${fmtPrice(state.symbol, last.close)}</b></span>` +
+      `<span class="${chgCls}">${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%</span>` +
+      `<span>Vol <b>${fmtNum(last.volume, 2)}</b></span>` +
+      (ma5 !== null ? `<span class="ma5">MA5 <b>${fmtPrice(state.symbol, ma5)}</b></span>` : '') +
+      (ma10 !== null ? `<span class="ma10">MA10 <b>${fmtPrice(state.symbol, ma10)}</b></span>` : '') +
+      (ma30 !== null ? `<span class="ma30">MA30 <b>${fmtPrice(state.symbol, ma30)}</b></span>` : '');
+  }
+
+  // ---------- price scale: KCEX-style settings ----------
+  // KCEX default is auto-scale ON: zooming refits the price axis to the
+  // visible candles. Turning Auto off freezes the axis (manual mode) — the
+  // user then moves it by dragging the price axis. Lightweight-charts v4
+  // has no public setVisibleRange on the price scale, so fitting is done
+  // by briefly re-enabling autoScale (one frame recalculates the range
+  // from the new data) and locking it again.
+  function fitPriceScale() {
+    if (!chart || state.autoScale) return; // auto-scale on: library fits by itself
+    const ps = chart.priceScale('right');
+    ps.applyOptions({ autoScale: true });
+    setTimeout(() => { if (!state.autoScale) ps.applyOptions({ autoScale: false }); }, 50);
+  }
+  function keepPriceInRange(candle) {
+    if (!chart || !state.klines.length || state.autoScale) return;
+    const hi = Number(candle.high), lo = Number(candle.low);
+    let dataLo = Infinity, dataHi = -Infinity;
+    for (const k of state.klines) {
+      dataLo = Math.min(dataLo, Number(k.low));
+      dataHi = Math.max(dataHi, Number(k.high));
+    }
+    // New extreme beyond the fitted data range: re-fit so the price stays visible.
+    if (hi > dataHi || lo < dataLo) fitPriceScale();
+  }
+  function setAutoScale(on) {
+    state.autoScale = on;
+    try { localStorage.setItem('ex_autoscale', on ? '1' : '0'); } catch {}
+    if (chart) chart.priceScale('right').applyOptions({ autoScale: on });
+    document.getElementById('ps-auto').classList.toggle('active', on);
+  }
+  function setPriceScaleMode(mode) {
+    state.psMode = mode;
+    try { localStorage.setItem('ex_psmode', mode); } catch {}
+    if (chart) {
+      const m = mode === 'log' ? LightweightCharts.PriceScaleMode.Logarithmic
+        : mode === 'percent' ? LightweightCharts.PriceScaleMode.Percentage
+        : LightweightCharts.PriceScaleMode.Normal;
+      chart.priceScale('right').applyOptions({ mode: m });
+      // Percentage mode forces autoScale on in the library.
+      if (mode === 'percent' && !state.autoScale) setAutoScale(true);
+    }
+    document.getElementById('ps-lin').classList.toggle('active', mode === 'linear');
+    document.getElementById('ps-log').classList.toggle('active', mode === 'log');
+    document.getElementById('ps-pct').classList.toggle('active', mode === 'percent');
+  }
+  function resetChart() {
+    if (!chart) return;
+    chart.timeScale().resetTimeScale();
+    fitPriceScale();
+  }
+
+  // ---------- position overlay on the chart (KCEX-style) ----------
+  // Open futures position for the current pair, drawn on the chart:
+  // dashed entry line (green long / red short) + dashed orange liquidation
+  // line, a floating badge with live PnL + distance to entry pinned to the
+  // entry line, and B/S markers on the candles where own trades filled.
+  const INTERVAL_SECONDS = { '1m': 60, '5m': 300, '15m': 900, '30m': 1800, '1h': 3600, '4h': 14400, '1d': 86400 };
+  let posEntryLine = null, posLiqLine = null, posKey = null;
+  let lastMarkerKey = '';
+
+  function currentPosition() {
+    return (state.openPositions || []).find((p) => p.symbol === state.symbol) || null;
+  }
+
+  function clearPositionLines() {
+    if (!candleSeries) return;
+    if (posEntryLine) { try { candleSeries.removePriceLine(posEntryLine); } catch { /* ignore */ } posEntryLine = null; }
+    if (posLiqLine) { try { candleSeries.removePriceLine(posLiqLine); } catch { /* ignore */ } posLiqLine = null; }
+    posKey = null;
+  }
+
+  function refreshPositionOverlay() {
+    const el = document.getElementById('pos-overlay');
+    if (!candleSeries) return;
+    const pos = currentPosition();
+    if (!pos) {
+      clearPositionLines();
+      if (el) el.classList.add('hidden');
+      return;
+    }
+    const key = `${pos.id}:${pos.symbol}:${pos.entry_price}:${pos.liquidation_price}`;
+    if (key !== posKey) {
+      clearPositionLines();
+      const sideColor = pos.side === 'long' ? '#0ecb81' : '#f6465d';
+      posEntryLine = candleSeries.createPriceLine({
+        price: Number(pos.entry_price),
+        color: sideColor,
+        lineWidth: 1,
+        lineStyle: LightweightCharts.LineStyle.Dashed,
+        axisLabelVisible: true,
+        title: 'Entry',
+        crosshairMarkerVisible: false,
+      });
+      posLiqLine = candleSeries.createPriceLine({
+        price: Number(pos.liquidation_price),
+        color: '#f0b90b',
+        lineWidth: 1,
+        lineStyle: LightweightCharts.LineStyle.Dashed,
+        axisLabelVisible: true,
+        title: 'Liq',
+        crosshairMarkerVisible: false,
+      });
+      posKey = key;
+    }
+    updatePositionBadge();
+  }
+
+  // Mark line: dashed horizontal line at the live price with a "Mark"
+  // axis label (TradingView's last-price line). Recreated on every tick
+  // because price lines cannot change their price in place.
+  function updateMarkLine() {
+    if (!candleSeries || !state.lastPrice) return;
+    if (markPriceLine) candleSeries.removePriceLine(markPriceLine);
+    markPriceLine = candleSeries.createPriceLine({
+      price: state.lastPrice,
+      color: '#2962ff',
+      lineWidth: 1,
+      lineStyle: LightweightCharts.LineStyle.Dashed,
+      axisLabelVisible: true,
+      title: 'Mark',
+    });
+  }
+
+  // Liquidation edge label: when the liq price is outside the visible
+  // range, its line and axis label are off-screen — pin a small pill to
+  // the nearest chart edge (bottom if liq is below, top if above) so the
+  // number is always visible next to where the line would be.
+  function updateLiqEdge(pos, mark) {
+    const pill = document.getElementById('liq-edge');
+    if (!pill || !candleSeries) return;
+    if (!pos || !mark) { pill.classList.add('hidden'); return; }
+    const liq = Number(pos.liquidation_price);
+    const y = candleSeries.priceToCoordinate(liq);
+    const h = document.getElementById('chart').clientHeight || 320;
+    // Treat the outer 12px as "off-screen": a line buried at the extreme
+    // edge (behind the volume bars / cut-off axis label) is not visible.
+    if (y !== null && y >= 12 && y <= h - 12) { pill.classList.add('hidden'); return; }
+    pill.classList.remove('hidden');
+    pill.textContent = `${liq < mark ? '▼' : '▲'} Liq ${fmtPrice(pos.symbol, liq)}`;
+    // Pinned to the bottom/top edge of the MAIN chart (the panel also holds
+    // the MACD pane below, so bottom is computed from the chart height).
+    pill.style.top = liq < mark ? Math.max(0, h - 26) + 'px' : '4px';
+  }
+
+  // Live badge: PnL (USDT + ROE%) and distance from mark to entry.
+  // Repositioned on every price tick and on chart scroll/zoom.
+  function updatePositionBadge() {
+    const el = document.getElementById('pos-overlay');
+    if (!el || !candleSeries) return;
+    const pos = currentPosition();
+    const mark = state.lastPrice;
+    updateLiqEdge(pos, mark);
+    if (!pos || !mark) { el.classList.add('hidden'); return; }
+    const entry = Number(pos.entry_price);
+    const qty = Number(pos.qty);
+    const margin = Number(pos.margin);
+    const pnl = pos.side === 'long' ? (mark - entry) * qty : (entry - mark) * qty;
+    const y = candleSeries.priceToCoordinate(entry);
+    if (y === null) { el.classList.add('hidden'); return; }
+    el.classList.remove('hidden');
+    el.classList.toggle('down', pnl < 0);
+    el.style.top = Math.max(0, y - 28) + 'px';
+    // One compact line only: direction · USDT PnL. No ROE% and no Liq —
+    // the liq price lives on the liq line / edge pill below.
+    el.innerHTML =
+      `<div class="po-pnl">${pos.side === 'long' ? 'LONG' : 'SHORT'} · ${pnl >= 0 ? '+' : ''}${fmtUsd(pnl)}</div>`;
+  }
+
+  // B/S markers: own filled trades, floored onto the current interval's
+  // candle (buy = B below the bar, sell = S above the bar).
+  function refreshTradeMarkers() {
+    if (!candleSeries || !state.klines.length) return;
+    const ivSec = INTERVAL_SECONDS[state.interval] || 900;
+    const byCandle = new Map();
+    for (const t of state.recentTrades || []) {
+      const ts = Math.floor(new Date(t.created_at).getTime() / 1000);
+      if (!Number.isFinite(ts)) continue;
+      byCandle.set(Math.floor(ts / ivSec) * ivSec, t.side);
+    }
+    const markers = [...byCandle.entries()].sort((a, b) => a[0] - b[0]).map(([time, side]) => ({
+      time,
+      position: side === 'buy' ? 'belowBar' : 'aboveBar',
+      color: side === 'buy' ? '#0ecb81' : '#f6465d',
+      shape: side === 'buy' ? 'arrowUp' : 'arrowDown',
+      text: side === 'buy' ? 'B' : 'S',
+    }));
+    const key = JSON.stringify(markers);
+    if (key !== lastMarkerKey) {
+      lastMarkerKey = key;
+      candleSeries.setMarkers(markers);
     }
   }
 
-  // ---------- websocket (combined stream, with host fallback) ----------
+  async function loadKlines() {
+    // Retry: on a slow VPN one timeout must not leave the chart empty
+    // until the next symbol/interval change. Guard against applying a
+    // stale response after the user switched symbol/interval mid-retry.
+    const sym = state.symbol, iv = state.interval;
+    let lastErr = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const raw = await marketRest(`/api/market/klines?symbol=${sym}&interval=${iv}&limit=300`);
+        if (state.symbol !== sym || state.interval !== iv) return;
+        state.klines = raw.map((k) => ({
+          time: Math.floor(k[0] / 1000),
+          open: Number(k[1]), high: Number(k[2]), low: Number(k[3]), close: Number(k[4]),
+          volume: Number(k[5]),
+        }));
+        if (candleSeries) {
+          candleSeries.setData(state.klines);
+          volumeSeries.setData(state.klines.map((k) => ({
+            time: k.time, value: k.volume, color: k.close >= k.open ? 'rgba(14,203,129,0.5)' : 'rgba(246,70,93,0.5)',
+          })));
+        }
+        refreshIndicators();
+        updateOhlc();
+        const last = state.klines[state.klines.length - 1];
+        if (last) updateLastPrice(last.close);
+        updateMarkLine();
+        refreshPositionOverlay();
+        refreshTradeMarkers();
+        fitPriceScale(); // lock the price range for this symbol/interval
+        return;
+      } catch (err) {
+        lastErr = err;
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+    }
+    toast('Chart data unavailable: ' + lastErr.message, 'err');
+  }
+
+  // ---------- websocket (best-effort only; polling is the primary path) ----------
   function connectWs() {
-    if (state.ws) { state.ws.close(); state.ws = null; }
+    if (state.ws) { try { state.ws.close(); } catch { /* ignore */ } state.ws = null; }
     clearTimeout(state.wsReconnectTimer);
     const sym = state.symbol.toLowerCase();
     const streams = `${sym}@kline_${state.interval}/${sym}@depth20@100ms/${sym}@trade`;
     const host = BINANCE_WS[state.wsHostIdx % BINANCE_WS.length];
-    const ws = new WebSocket(`${host}/stream?streams=${streams}`);
+    let ws;
+    try {
+      ws = new WebSocket(`${host}/stream?streams=${streams}`);
+    } catch {
+      scheduleWsReconnect();
+      return;
+    }
     state.ws = ws;
 
+    ws.onopen = () => { state.wsBackoff = 3000; };
     ws.onmessage = (ev) => {
       let msg;
       try { msg = JSON.parse(ev.data); } catch { return; }
@@ -178,16 +491,28 @@
       else if (stream.includes('@depth')) onDepth(data);
       else if (stream.includes('@kline')) onKline(data.k);
     };
-    ws.onclose = () => {
-      state.wsReconnectTimer = setTimeout(() => {
-        state.wsHostIdx += 1; // try the other host next time
-        connectWs();
-      }, 3000);
-    };
+    ws.onclose = () => { scheduleWsReconnect(); };
     ws.onerror = () => { try { ws.close(); } catch { /* ignore */ } };
   }
 
+  // Reconnect with backoff (3s -> 30s cap) so a blocked websocket fails
+  // quietly in the background instead of hammering reconnects.
+  function scheduleWsReconnect() {
+    clearTimeout(state.wsReconnectTimer);
+    const delay = Math.min(state.wsBackoff || 3000, 30000);
+    state.wsBackoff = delay * 2;
+    state.wsReconnectTimer = setTimeout(() => {
+      state.wsHostIdx += 1; // try the other host next time
+      connectWs();
+    }, delay);
+  }
+
   function onKline(k) {
+    updateCandle({ t: k.t, o: k.o, h: k.h, l: k.l, c: k.c, v: k.v });
+  }
+
+  // Apply one candle (from the websocket or from the polling fallback).
+  function updateCandle(k) {
     const candle = {
       time: Math.floor(k.t / 1000),
       open: Number(k.o), high: Number(k.h), low: Number(k.l), close: Number(k.c),
@@ -202,34 +527,44 @@
     } else {
       return;
     }
-    candleSeries.update(candle);
-    volumeSeries.update({ time: candle.time, value: candle.volume, color: candle.close >= candle.open ? 'rgba(14,203,129,0.5)' : 'rgba(246,70,93,0.5)' });
+    if (candleSeries) {
+      candleSeries.update(candle);
+      volumeSeries.update({ time: candle.time, value: candle.volume, color: candle.close >= candle.open ? 'rgba(14,203,129,0.5)' : 'rgba(246,70,93,0.5)' });
+      keepPriceInRange(candle); // live price left the locked range: expand just enough
+    }
     refreshIndicators();
+    updateOhlc();
     updateLastPrice(candle.close);
+    updateMarkLine(); // after updateLastPrice: the mark line uses the fresh price
   }
 
   function updateLastPrice(price) {
     state.lastPrice = price;
-    const el = document.getElementById('last-price');
-    if (el) el.textContent = fmtPrice(state.symbol, price);
+    renderPairHeader();
     updateSpotPreview();
     updateFuturesPreview();
+    updatePositionBadge();
   }
 
   // ---------- order book ----------
   let lastBookRender = 0;
   function onDepth(data) {
+    // Websocket depth payload: { b: [[price, qty], ...], a: [...] }.
+    renderBook(data.b || [], data.a || []);
+  }
+  // Shared renderer for both shapes: websocket {b, a} and REST {bids, asks}.
+  function renderBook(bids, asks) {
     const now = Date.now();
     if (now - lastBookRender < 250) return; // throttle DOM updates
     lastBookRender = now;
-    const asks = (data.a || []).slice(0, 12).reverse();
-    const bids = (data.b || []).slice(0, 12);
+    const asksTop = (asks || []).slice(0, 12).reverse();
+    const bidsTop = (bids || []).slice(0, 12);
     const asksEl = document.getElementById('asks');
     const bidsEl = document.getElementById('bids');
-    asksEl.innerHTML = asks.map(([p, q]) => bookRow(p, q)).join('');
-    bidsEl.innerHTML = bids.map(([p, q]) => bookRow(p, q)).join('');
-    const bestAsk = Number((data.a || [])[0]?.[0] || 0);
-    const bestBid = Number((data.b || [])[0]?.[0] || 0);
+    asksEl.innerHTML = asksTop.map(([p, q]) => bookRow(p, q)).join('');
+    bidsEl.innerHTML = bidsTop.map(([p, q]) => bookRow(p, q)).join('');
+    const bestAsk = Number((asks || [])[0]?.[0] || 0);
+    const bestBid = Number((bids || [])[0]?.[0] || 0);
     const mid = document.getElementById('book-mid');
     if (bestAsk && bestBid) {
       const midPrice = (bestAsk + bestBid) / 2;
@@ -245,7 +580,7 @@
   const feed = [];
   async function loadRecentTrades() {
     try {
-      const raw = await binanceRest(`/api/v3/aggTrades?symbol=${state.symbol}&limit=30`);
+      const raw = await marketRest(`/api/market/aggTrades?symbol=${state.symbol}&limit=30`);
       feed.length = 0;
       for (const t of raw.reverse()) {
         feed.push({ price: Number(t.p), qty: Number(t.q), time: t.T, sell: t.m });
@@ -268,12 +603,36 @@
     }).join('');
   }
 
+  // ---------- live updates via REST polling (primary path) ----------
+  // The Binance websocket is blocked on some visitor networks, so the page
+  // polls the server proxy every 2s for the book, the latest candle and
+  // recent trades. The websocket (when it connects) only adds finer updates.
+  async function pollMarket() {
+    const sym = state.symbol;
+    try {
+      const depth = await marketRest(`/api/market/depth?symbol=${sym}&limit=20`);
+      renderBook(depth.bids || [], depth.asks || []);
+    } catch { /* non-critical: retried next tick */ }
+    try {
+      const kl = await marketRest(`/api/market/klines?symbol=${sym}&interval=${state.interval}&limit=2`);
+      if (Array.isArray(kl) && kl.length) {
+        const k = kl[kl.length - 1];
+        updateCandle({ t: k[0], o: k[1], h: k[2], l: k[3], c: k[4], v: k[5] });
+      }
+    } catch { /* non-critical */ }
+    try {
+      await loadRecentTrades();
+    } catch { /* non-critical */ }
+  }
+
   // ---------- balances / account ----------
   async function refreshBalances() {
     try {
-      const data = await api(`/api/account?uid=${getUid()}`);
+      const data = await api('/api/account');
       state.balances = data.balances;
       renderBalances();
+      // Admins get the separate Admin panel (Telegram mini app).
+      if (data.is_admin && window.AdminPanel) window.AdminPanel.enable();
     } catch (err) {
       toast(err.message, 'err');
     }
@@ -298,36 +657,64 @@
     let total = 0;
     for (const [asset, amount] of Object.entries(state.balances)) total += assetValue(asset, amount);
     const totalEl = document.getElementById('total-balance-value');
-    if (totalEl) totalEl.textContent = fmtUsd(total);
-    const uidEl = document.getElementById('uid-value');
-    if (uidEl) uidEl.textContent = getUid();
+    if (totalEl) totalEl.textContent = fmtNum(total, 2);
     updateSpotPreview();
     updateFuturesPreview();
   }
 
-  // ---------- symbol tabs / timeframe ----------
+  // ---------- pair cards / pair header ----------
+  function renderPairHeader() {
+    const sym = state.symbol;
+    const symEl = document.getElementById('pair-symbol');
+    if (symEl) symEl.textContent = sym.replace('USDT', '/USDT');
+    const iconEl = document.getElementById('pair-icon');
+    if (iconEl) iconEl.src = '/img/' + BASE_OF[sym].toLowerCase() + '.svg';
+    const priceEl = document.getElementById('pair-price');
+    if (priceEl) priceEl.textContent = state.lastPrice ? fmtPrice(sym, state.lastPrice) : '—';
+    const chEl = document.getElementById('pair-change');
+    const chg = state.ticker24[sym];
+    if (chEl) {
+      if (chg === undefined || chg === null) {
+        chEl.textContent = '—';
+        chEl.className = 'ph-change';
+      } else {
+        chEl.textContent = `${chg >= 0 ? '+' : ''}${chg.toFixed(2)}% (24h)`;
+        chEl.className = 'ph-change ' + (chg >= 0 ? 'num-up' : 'num-down');
+      }
+    }
+  }
+
   async function refreshTabPrices() {
     try {
-      const rows = await binanceRest(`/api/v3/ticker/24hr?symbols=${encodeURIComponent(JSON.stringify(SYMBOLS))}`);
+      const rows = await marketRest(`/api/market/ticker24?symbols=${encodeURIComponent(JSON.stringify(SYMBOLS))}`);
       for (const row of rows) {
-        const tab = document.querySelector(`.symbol-tab[data-symbol="${row.symbol}"] .p`);
-        if (!tab) continue;
         const change = Number(row.priceChangePercent);
-        tab.textContent = `${fmtPrice(row.symbol, row.lastPrice)} (${change >= 0 ? '+' : ''}${change.toFixed(2)}%)`;
-        tab.className = 'p ' + (change >= 0 ? 'up' : 'down');
+        state.ticker24[row.symbol] = change;
+        const card = document.querySelector(`.pair-card[data-symbol="${row.symbol}"]`);
+        if (!card) continue;
+        const priceEl = card.querySelector('.pc-price');
+        const chEl = card.querySelector('.pc-change');
+        if (priceEl) priceEl.textContent = fmtPrice(row.symbol, row.lastPrice);
+        if (chEl) {
+          chEl.textContent = `${change >= 0 ? '+' : ''}${change.toFixed(2)}%`;
+          chEl.className = 'pc-change ' + (change >= 0 ? 'up' : 'down');
+        }
       }
+      renderPairHeader();
     } catch { /* non-critical */ }
   }
 
   function setSymbol(symbol) {
     if (state.symbol === symbol) return;
     state.symbol = symbol;
-    document.querySelectorAll('.symbol-tab').forEach((el) => el.classList.toggle('active', el.dataset.symbol === symbol));
+    document.querySelectorAll('.pair-card').forEach((el) => el.classList.toggle('active', el.dataset.symbol === symbol));
     document.getElementById('spot-base').textContent = BASE_OF[symbol];
     document.getElementById('fut-base').textContent = BASE_OF[symbol];
+    renderPairHeader();
     loadKlines();
     loadRecentTrades();
     connectWs();
+    pollMarket();
     refreshOrders();
     refreshTrades();
   }
@@ -338,6 +725,63 @@
     document.querySelectorAll('.tf-btn').forEach((el) => el.classList.toggle('active', el.dataset.tf === interval));
     loadKlines();
     connectWs();
+    pollMarket();
+  }
+
+  // ---------- Spot / Futures switch + book tabs + indicator chips ----------
+  function setMode(mode) {
+    state.mode = mode;
+    document.querySelectorAll('.mode-btn').forEach((el) => el.classList.toggle('active', el.dataset.mode === mode));
+    document.getElementById('spot-panel').classList.toggle('hidden', mode !== 'spot');
+    document.getElementById('futures-panel').classList.toggle('hidden', mode !== 'futures');
+  }
+
+  function setBookTab(tab) {
+    document.querySelectorAll('.tab-btn').forEach((el) => el.classList.toggle('active', el.dataset.tab === tab));
+    document.getElementById('tab-book').classList.toggle('hidden', tab !== 'book');
+    document.getElementById('tab-trades').classList.toggle('hidden', tab !== 'trades');
+  }
+
+  function setMaVisible(v) {
+    state.showMA = v;
+    [ma5Series, ma10Series, ma30Series].forEach((s) => { if (s) s.applyOptions({ visible: v }); });
+    document.getElementById('ma-chip').classList.toggle('active', v);
+  }
+  function setVolVisible(v) {
+    state.showVol = v;
+    if (volumeSeries) volumeSeries.applyOptions({ visible: v });
+    document.getElementById('vol-chip').classList.toggle('active', v);
+  }
+  function setMacdVisible(v) {
+    state.showMacd = v;
+    const el = document.getElementById('macd-chart');
+    el.classList.toggle('hidden', !v);
+    document.getElementById('macd-chip').classList.toggle('active', v);
+    if (v && macdChart) requestAnimationFrame(() => macdChart.applyOptions({ width: el.clientWidth, height: el.clientHeight }));
+  }
+
+  // ---------- chart fullscreen ----------
+  function toggleFullscreen() {
+    const panel = document.querySelector('.chart-panel');
+    if (!panel) return;
+    if (document.fullscreenElement) {
+      document.exitFullscreen().catch(() => {});
+      return;
+    }
+    if (panel.classList.contains('fs-fallback')) {
+      panel.classList.remove('fs-fallback');
+      return;
+    }
+    if (panel.requestFullscreen) {
+      panel.requestFullscreen().catch(() => panel.classList.add('fs-fallback'));
+    } else {
+      panel.classList.add('fs-fallback');
+    }
+  }
+  function exitFullscreen() {
+    const panel = document.querySelector('.chart-panel');
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    if (panel) panel.classList.remove('fs-fallback');
   }
 
   // ---------- spot form ----------
@@ -365,6 +809,34 @@
     }
   }
 
+  // USDT amount <-> quantity, two-way sync (spot): qty = amount / price.
+  let spotSyncing = false;
+  function spotPriceNow() {
+    return state.spotType === 'limit'
+      ? Number(document.getElementById('spot-price').value || 0)
+      : (state.lastPrice || 0);
+  }
+  function syncSpotFromUsdt() {
+    if (spotSyncing) return; spotSyncing = true;
+    const amount = Number(document.getElementById('spot-usdt').value || 0);
+    const price = spotPriceNow();
+    const qtyEl = document.getElementById('spot-qty');
+    if (price && amount > 0) qtyEl.value = (amount / price).toFixed(6);
+    else if (!amount) qtyEl.value = '';
+    updateSpotPreview();
+    spotSyncing = false;
+  }
+  function syncSpotFromQty() {
+    if (spotSyncing) return; spotSyncing = true;
+    const qty = Number(document.getElementById('spot-qty').value || 0);
+    const price = spotPriceNow();
+    const usdtEl = document.getElementById('spot-usdt');
+    if (price && qty > 0) usdtEl.value = (qty * price).toFixed(2);
+    else if (!qty) usdtEl.value = '';
+    updateSpotPreview();
+    spotSyncing = false;
+  }
+
   function setSpotSide(side) {
     state.spotSide = side;
     document.getElementById('spot-buy-btn').classList.toggle('buy-on', side === 'buy');
@@ -377,6 +849,7 @@
     document.getElementById('spot-limit-btn').classList.toggle('type-on', type === 'limit');
     document.getElementById('spot-price').disabled = type === 'market';
     updateSpotPreview();
+    syncSpotFromQty(); // price basis changed: USDT amount follows the qty
   }
 
   async function submitSpot() {
@@ -389,10 +862,11 @@
     try {
       const data = await api('/api/spot/order', {
         method: 'POST',
-        body: JSON.stringify({ uid: getUid(), symbol: state.symbol, side: state.spotSide, type: state.spotType, qty, price: state.spotType === 'limit' ? price : undefined }),
+        body: JSON.stringify({ symbol: state.symbol, side: state.spotSide, type: state.spotType, qty, price: state.spotType === 'limit' ? price : undefined }),
       });
       toast(data.filled ? `Order filled @ ${fmtPrice(state.symbol, data.trade.price)}` : 'Limit order placed');
       document.getElementById('spot-qty').value = '';
+      document.getElementById('spot-usdt').value = '';
       await refreshBalances();
       await refreshOrders();
       await refreshTrades();
@@ -431,6 +905,30 @@
     }
   }
 
+  // USDT amount (margin) <-> quantity, two-way sync (futures):
+  // qty = amount * leverage / mark; amount = qty * mark / leverage.
+  let futSyncing = false;
+  function syncFutFromUsdt() {
+    if (futSyncing) return; futSyncing = true;
+    const amount = Number(document.getElementById('fut-usdt').value || 0);
+    const mark = state.lastPrice || 0;
+    const qtyEl = document.getElementById('fut-qty');
+    if (mark && amount > 0) qtyEl.value = ((amount * state.leverage) / mark).toFixed(6);
+    else if (!amount) qtyEl.value = '';
+    updateFuturesPreview();
+    futSyncing = false;
+  }
+  function syncFutFromQty() {
+    if (futSyncing) return; futSyncing = true;
+    const qty = Number(document.getElementById('fut-qty').value || 0);
+    const mark = state.lastPrice || 0;
+    const usdtEl = document.getElementById('fut-usdt');
+    if (mark && qty > 0) usdtEl.value = ((qty * mark) / state.leverage).toFixed(2);
+    else if (!qty) usdtEl.value = '';
+    updateFuturesPreview();
+    futSyncing = false;
+  }
+
   function setFutSide(side) {
     state.futSide = side;
     document.getElementById('fut-long-btn').classList.toggle('long-on', side === 'long');
@@ -443,6 +941,7 @@
     document.getElementById('fut-lev-range').value = lev;
     document.getElementById('fut-lev-label').textContent = lev + 'x';
     updateFuturesPreview();
+    syncFutFromUsdt(); // leverage changed: qty follows the entered USDT amount
   }
 
   async function submitFutures() {
@@ -453,10 +952,11 @@
     try {
       const data = await api('/api/futures/open', {
         method: 'POST',
-        body: JSON.stringify({ uid: getUid(), symbol: state.symbol, side: state.futSide, leverage: state.leverage, qty }),
+        body: JSON.stringify({ symbol: state.symbol, side: state.futSide, leverage: state.leverage, qty }),
       });
       toast(`Position opened @ ${fmtPrice(state.symbol, data.position.entry_price)}`);
       document.getElementById('fut-qty').value = '';
+      document.getElementById('fut-usdt').value = '';
       await refreshBalances();
       await refreshPositions();
     } catch (err) {
@@ -469,7 +969,7 @@
   // ---------- tables ----------
   async function refreshOrders() {
     try {
-      const data = await api(`/api/spot/orders?uid=${getUid()}&symbol=${state.symbol}`);
+      const data = await api(`/api/spot/orders?symbol=${state.symbol}`);
       const el = document.getElementById('open-orders-body');
       if (!data.orders.length) {
         el.innerHTML = `<tr><td colspan="6" class="empty">No open orders</td></tr>`;
@@ -485,7 +985,7 @@
       </tr>`).join('');
       el.querySelectorAll('[data-cancel]').forEach((btn) => btn.addEventListener('click', async () => {
         try {
-          await api('/api/spot/cancel', { method: 'POST', body: JSON.stringify({ uid: getUid(), orderId: Number(btn.dataset.cancel) }) });
+          await api('/api/spot/cancel', { method: 'POST', body: JSON.stringify({ orderId: Number(btn.dataset.cancel) }) });
           toast('Order cancelled');
           await refreshBalances();
           await refreshOrders();
@@ -496,7 +996,9 @@
 
   async function refreshPositions() {
     try {
-      const data = await api(`/api/futures/positions?uid=${getUid()}`);
+      const data = await api('/api/futures/positions');
+      state.openPositions = data.open || [];
+      refreshPositionOverlay();
       const el = document.getElementById('positions-body');
       const rows = [];
       for (const p of data.open) {
@@ -529,7 +1031,7 @@
       el.innerHTML = rows.length ? rows.join('') : `<tr><td colspan="8" class="empty">No positions yet</td></tr>`;
       el.querySelectorAll('[data-close-pos]').forEach((btn) => btn.addEventListener('click', async () => {
         try {
-          const data2 = await api('/api/futures/close', { method: 'POST', body: JSON.stringify({ uid: getUid(), positionId: Number(btn.dataset.closePos) }) });
+          const data2 = await api('/api/futures/close', { method: 'POST', body: JSON.stringify({ positionId: Number(btn.dataset.closePos) }) });
           toast(`Closed. Realized PnL ${fmtUsd(data2.realized_pnl)}`);
           await refreshBalances();
           await refreshPositions();
@@ -540,7 +1042,9 @@
 
   async function refreshTrades() {
     try {
-      const data = await api(`/api/trades?uid=${getUid()}&symbol=${state.symbol}&limit=20`);
+      const data = await api(`/api/trades?symbol=${state.symbol}&limit=20`);
+      state.recentTrades = data.trades || [];
+      refreshTradeMarkers();
       const el = document.getElementById('trade-history-body');
       if (!data.trades.length) {
         el.innerHTML = `<tr><td colspan="5" class="empty">No trades yet</td></tr>`;
@@ -558,22 +1062,33 @@
 
   // ---------- init ----------
   function init() {
-    initChart();
+    // Telegram Mini App: tell Telegram the app is ready and expand to full height.
+    try {
+      const tg = window.Telegram && window.Telegram.WebApp;
+      if (tg) { tg.ready(); tg.expand(); }
+    } catch {}
+    // Home is the landing view: only build the chart when the Trade view
+    // is actually visible (a hidden container measures zero width).
+    // ensureChart() builds it the first time Trade opens.
+    if (!document.getElementById('trade-view').classList.contains('hidden')) initChart();
     document.getElementById('spot-base').textContent = BASE_OF[state.symbol];
     document.getElementById('fut-base').textContent = BASE_OF[state.symbol];
 
-    document.querySelectorAll('.symbol-tab').forEach((el) => el.addEventListener('click', () => setSymbol(el.dataset.symbol)));
+    document.querySelectorAll('.pair-card').forEach((el) => el.addEventListener('click', () => setSymbol(el.dataset.symbol)));
     document.querySelectorAll('.tf-btn').forEach((el) => el.addEventListener('click', () => setIntervalTf(el.dataset.tf)));
-    document.getElementById('macd-toggle').addEventListener('change', (e) => {
-      document.getElementById('macd-chart').classList.toggle('hidden', !e.target.checked);
-    });
+    document.querySelectorAll('.mode-btn').forEach((el) => el.addEventListener('click', () => setMode(el.dataset.mode)));
+    document.querySelectorAll('.tab-btn').forEach((el) => el.addEventListener('click', () => setBookTab(el.dataset.tab)));
+    document.getElementById('ma-chip').addEventListener('click', () => setMaVisible(!state.showMA));
+    document.getElementById('vol-chip').addEventListener('click', () => setVolVisible(!state.showVol));
+    document.getElementById('macd-chip').addEventListener('click', () => setMacdVisible(!state.showMacd));
 
     document.getElementById('spot-buy-btn').addEventListener('click', () => setSpotSide('buy'));
     document.getElementById('spot-sell-btn').addEventListener('click', () => setSpotSide('sell'));
     document.getElementById('spot-market-btn').addEventListener('click', () => setSpotType('market'));
     document.getElementById('spot-limit-btn').addEventListener('click', () => setSpotType('limit'));
-    document.getElementById('spot-qty').addEventListener('input', updateSpotPreview);
-    document.getElementById('spot-price').addEventListener('input', updateSpotPreview);
+    document.getElementById('spot-qty').addEventListener('input', syncSpotFromQty);
+    document.getElementById('spot-usdt').addEventListener('input', syncSpotFromUsdt);
+    document.getElementById('spot-price').addEventListener('input', syncSpotFromQty);
     document.getElementById('spot-submit').addEventListener('click', submitSpot);
     document.querySelectorAll('[data-pct]').forEach((btn) => btn.addEventListener('click', () => {
       const pct = Number(btn.dataset.pct) / 100;
@@ -586,25 +1101,33 @@
         ? (Number(state.balances.USDT || 0) * pct) / price
         : Number(state.balances[base] || 0) * pct;
       document.getElementById('spot-qty').value = qty > 0 ? qty.toFixed(6) : '';
-      updateSpotPreview();
+      syncSpotFromQty();
     }));
 
     document.getElementById('fut-long-btn').addEventListener('click', () => setFutSide('long'));
     document.getElementById('fut-short-btn').addEventListener('click', () => setFutSide('short'));
     document.querySelectorAll('.lev-btn').forEach((el) => el.addEventListener('click', () => setLeverage(Number(el.dataset.lev))));
     document.getElementById('fut-lev-range').addEventListener('input', (e) => setLeverage(Number(e.target.value)));
-    document.getElementById('fut-qty').addEventListener('input', updateFuturesPreview);
+    document.getElementById('fut-qty').addEventListener('input', syncFutFromQty);
+    document.getElementById('fut-usdt').addEventListener('input', syncFutFromUsdt);
     document.getElementById('fut-submit').addEventListener('click', submitFutures);
-
-    document.getElementById('uid-value').textContent = getUid();
-    document.getElementById('uid-chip').addEventListener('click', () => {
-      navigator.clipboard?.writeText(getUid());
-      toast('UID copied: ' + getUid());
-    });
+    document.getElementById('fs-btn').addEventListener('click', toggleFullscreen);
+    document.getElementById('fs-exit').addEventListener('click', exitFullscreen);
+    document.getElementById('ps-lin').addEventListener('click', () => setPriceScaleMode('linear'));
+    document.getElementById('ps-log').addEventListener('click', () => setPriceScaleMode('log'));
+    document.getElementById('ps-pct').addEventListener('click', () => setPriceScaleMode('percent'));
+    document.getElementById('ps-auto').addEventListener('click', () => setAutoScale(!state.autoScale));
+    document.getElementById('ps-reset').addEventListener('click', resetChart);
+    try {
+      if (localStorage.getItem('ex_autoscale') === '0') setAutoScale(false);
+      const savedMode = localStorage.getItem('ex_psmode');
+      if (savedMode === 'log' || savedMode === 'percent') setPriceScaleMode(savedMode);
+    } catch {}
 
     loadKlines();
     loadRecentTrades();
     connectWs();
+    pollMarket();
     refreshBalances();
     refreshServerPrices();
     refreshTabPrices();
@@ -612,11 +1135,16 @@
     refreshPositions();
     refreshTrades();
 
+    setInterval(pollMarket, 2000);
     setInterval(refreshServerPrices, 2000);
     setInterval(refreshPositions, 2000);
     setInterval(refreshTabPrices, 10000);
     setInterval(() => { refreshOrders(); refreshTrades(); }, 5000);
   }
+
+  // Public handle for the Home/Profile views: open Trade, switch the
+  // pair, and build the chart on first use.
+  window.TradeApp = { setMode, setSymbol, ensureChart };
 
   document.addEventListener('DOMContentLoaded', init);
 })();

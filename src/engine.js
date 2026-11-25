@@ -2,6 +2,7 @@
 // Runs on every price tick (see server.js). Pure-ish functions are exported
 // for testing (liquidationPrice / unrealizedPnl live in money.js).
 const { D, FEE_RATE, unrealizedPnl } = require('./money');
+const tradeEvents = require('./events');
 
 function baseAsset(symbol) {
   return symbol.replace('USDT', '');
@@ -77,6 +78,13 @@ async function checkLiquidations(store, prices) {
         status: 'liquidated',
         realized_pnl: pnl.minus(fee).toString(),
         closed_at: new Date().toISOString(),
+      });
+      tradeEvents.push('futures_liquidated', {
+        uid: pos.uid, symbol: pos.symbol, side: pos.side,
+        leverage: pos.leverage, qty: pos.qty,
+        entry_price: pos.entry_price, liquidation_price: pos.liquidation_price,
+        margin: pos.margin,
+        realized_pnl: pnl.minus(fee).toString(),
       });
       console.log(`[engine] LIQUIDATED position #${pos.id} ${pos.symbol} ${pos.side} @ ${pos.liquidation_price}`);
     } catch (err) {

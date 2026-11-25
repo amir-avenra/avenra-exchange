@@ -1,9 +1,10 @@
 // Wallet page: all balances with live USDT value.
+// Identity is the numeric Telegram id (from /api/account).
 (function () {
   async function refresh() {
     try {
       const [account, prices] = await Promise.all([
-        api(`/api/account?uid=${getUid()}`),
+        api('/api/account'),
         api('/api/prices'),
       ]);
       const balances = account.balances;
@@ -22,7 +23,11 @@
       }).join('');
       document.getElementById('wallet-body').innerHTML = rows;
       document.getElementById('wallet-total-value').textContent = fmtUsd(total);
-      document.getElementById('total-balance-value').textContent = fmtUsd(total);
+      // Header shows the plain number + the "USDT" label next to it.
+      document.getElementById('total-balance-value').textContent = fmtNum(total, 2);
+      // Show the numeric Telegram id (tap to copy).
+      const tgId = account.tg_user ? String(account.tg_user.id) : account.uid;
+      document.getElementById('uid-value').textContent = tgId;
     } catch (err) {
       toast(err.message, 'err');
     }
@@ -30,10 +35,15 @@
   window.refreshBalances = refresh;
 
   document.addEventListener('DOMContentLoaded', () => {
-    document.getElementById('uid-value').textContent = getUid();
+    // Telegram Mini App: tell Telegram the app is ready and expand to full height.
+    try {
+      const tg = window.Telegram && window.Telegram.WebApp;
+      if (tg) { tg.ready(); tg.expand(); }
+    } catch {}
     document.getElementById('uid-chip').addEventListener('click', () => {
-      navigator.clipboard?.writeText(getUid());
-      toast('UID copied: ' + getUid());
+      const id = document.getElementById('uid-value').textContent;
+      navigator.clipboard?.writeText(id);
+      toast('Telegram ID copied: ' + id);
     });
     refresh();
     setInterval(refresh, 5000);

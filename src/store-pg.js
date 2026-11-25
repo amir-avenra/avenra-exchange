@@ -48,6 +48,19 @@ function createPgStore(databaseUrl) {
       return rows[0] || null;
     },
 
+    async listAccounts() {
+      const { rows } = await pool.query('SELECT uid, created_at FROM accounts ORDER BY created_at DESC LIMIT 500');
+      return rows;
+    },
+
+    async countTrades(uid) {
+      const params = [];
+      let sql = 'SELECT COUNT(*)::int AS n FROM trades WHERE 1=1';
+      if (uid) { params.push(uid); sql += ` AND uid = $${params.length}`; }
+      const { rows } = await pool.query(sql, params);
+      return rows[0].n;
+    },
+
     async getBalances(uid) {
       const { rows } = await pool.query('SELECT asset, amount FROM balances WHERE uid = $1', [uid]);
       const out = {};

@@ -1,22 +1,25 @@
-// Shared helpers: UID identity, API client, formatting, toast.
+// Shared helpers: API client, formatting, toast.
 const SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT'];
 const ASSETS = ['USDT', 'BTC', 'ETH', 'BNB', 'SOL', 'XRP'];
 const BASE_OF = { BTCUSDT: 'BTC', ETHUSDT: 'ETH', BNBUSDT: 'BNB', SOLUSDT: 'SOL', XRPUSDT: 'XRP' };
 
-function getUid() {
-  let uid = localStorage.getItem('ex_uid');
-  if (!/^\d{8}$/.test(uid || '')) {
-    uid = String(Math.floor(10000000 + Math.random() * 90000000));
-    localStorage.setItem('ex_uid', uid);
+// Telegram Mini App identity: when the page runs inside Telegram,
+// window.Telegram.WebApp.initData holds the signed user payload.
+// It is sent on every API call so the server can verify the user.
+function tgInitData() {
+  try {
+    const tg = window.Telegram && window.Telegram.WebApp;
+    return (tg && tg.initData) || '';
+  } catch {
+    return '';
   }
-  return uid;
 }
 
 async function api(path, opts = {}) {
-  const res = await fetch(path, {
-    headers: { 'Content-Type': 'application/json' },
-    ...opts,
-  });
+  const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
+  const initData = tgInitData();
+  if (initData) headers['X-Telegram-Init-Data'] = initData;
+  const res = await fetch(path, { ...opts, headers });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
   return data;

@@ -33,6 +33,14 @@ function createMemoryStore() {
       return accounts.get(uid) || null;
     },
 
+    async listAccounts() {
+      return [...accounts.values()].map((a) => ({ ...a }));
+    },
+
+    async countTrades(uid) {
+      return trades.filter((t) => !uid || t.uid === uid).length;
+    },
+
     async getBalances(uid) {
       const out = {};
       for (const [asset, amount] of balMap(uid)) out[asset] = amount;
