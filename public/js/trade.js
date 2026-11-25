@@ -87,6 +87,23 @@
       if (el) el.textContent = 'Chart unavailable';
       return;
     }
+    try {
+      initChartInner(el);
+    } catch (err) {
+      // A half-built chart (chart object exists, series missing) would
+      // stay blank forever: ensureChart() would see `chart` set and never
+      // retry, and loadKlines() would skip setData without a series.
+      // Tear it all down so the next Trade open builds it fresh.
+      console.error('chart init failed, will retry on next Trade open:', err);
+      try { if (chart) chart.remove(); } catch {}
+      try { if (macdChart) macdChart.remove(); } catch {}
+      chart = null; candleSeries = null; volumeSeries = null;
+      ma5Series = null; ma10Series = null; ma30Series = null;
+      macdChart = null; macdHist = null; macdDif = null; macdDea = null;
+    }
+  }
+
+  function initChartInner(el) {
     chart = LightweightCharts.createChart(el, {
       width: el.clientWidth,
       height: el.clientHeight || 320,
@@ -138,7 +155,7 @@
 
     const macdEl = document.getElementById('macd-chart');
     macdChart = LightweightCharts.createChart(macdEl, {
-      width: macdEl.clientWidth,
+      width: macdEl.clientWidth || el.clientWidth,
       height: macdEl.clientHeight || 110,
       layout: { background: { color: '#12161c' }, textColor: '#d1d4dc', fontSize: 11 },
       grid: { vertLines: { color: 'rgba(42,46,57,0.5)' }, horzLines: { color: 'rgba(42,46,57,0.5)' } },
@@ -170,18 +187,32 @@
   function ensureChart() {
     if (!chart) {
       initChart();
-      if (state.klines.length && candleSeries) {
-        candleSeries.setData(state.klines);
-        refreshIndicators();
-        updateOhlc();
-        refreshPositionOverlay();
-        refreshTradeMarkers();
-        fitPriceScale();
+      if (chart && candleSeries && state.klines.length) {
+        paintKlines();
       }
     } else {
       const el = document.getElementById('chart');
       if (el) chart.applyOptions({ width: el.clientWidth, height: el.clientHeight });
+      // Self-heal: the chart exists but its series never got data (slow
+      // connection raced the first paint, or an earlier init failed
+      // partway). Repaint now instead of leaving a blank chart.
+      if (candleSeries && state.klines.length && !seriesHasData()) {
+        paintKlines();
+      }
     }
+  }
+
+  function seriesHasData() {
+    try { return !!candleSeries.dataByIndex(0); } catch { return false; }
+  }
+
+  function paintKlines() {
+    candleSeries.setData(state.klines);
+    refreshIndicators();
+    updateOhlc();
+    refreshPositionOverlay();
+    refreshTradeMarkers();
+    fitPriceScale();
   }
 
   function setMaSeries(series, closes, period) {
@@ -281,6 +312,7 @@
   }
   function resetChart() {
     if (!chart) return;
+    if (candleSeries && state.klines.length && !seriesHasData()) paintKlines();
     chart.timeScale().resetTimeScale();
     fitPriceScale();
   }
@@ -734,6 +766,9 @@
     document.querySelectorAll('.mode-btn').forEach((el) => el.classList.toggle('active', el.dataset.mode === mode));
     document.getElementById('spot-panel').classList.toggle('hidden', mode !== 'spot');
     document.getElementById('futures-panel').classList.toggle('hidden', mode !== 'futures');
+    // Keep the bottom nav in sync when switching via the top Spot/Futures
+    // tabs, so the nav never shows Spot while Futures is open (or reverse).
+    document.querySelectorAll('.bn-item[data-view="trade"]').forEach((el) => el.classList.toggle('active', el.dataset.mode === mode));
   }
 
   function setBookTab(tab) {
@@ -1144,7 +1179,7 @@
 
   // Public handle for the Home/Profile views: open Trade, switch the
   // pair, and build the chart on first use.
-  window.TradeApp = { setMode, setSymbol, ensureChart };
+  window.TradeApp = { setMode, setSymbol, ensureChart, getMode: () => state.mode };
 
   document.addEventListener('DOMContentLoaded', init);
 })();

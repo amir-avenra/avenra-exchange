@@ -46,7 +46,8 @@
       el('home-trending').innerHTML = SYMBOLS.map((sym) => {
         const base = BASE_OF[sym];
         const price = Number(prices[sym] || 0);
-        const chg = bySym[sym] ? Number(bySym[sym].change) : null;
+        const rawChg = bySym[sym] ? Number(bySym[sym].priceChangePercent) : NaN;
+        const chg = Number.isFinite(rawChg) ? rawChg : null;
         return `<button class="trend-row" data-symbol="${sym}">
           <img class="coin-icon" src="/img/${base.toLowerCase()}.svg" alt="${base}">
           <span class="trend-sym">${base}<small>/USDT</small></span>
@@ -91,7 +92,8 @@
   }
 
   // Switch between Home / Trade / Profile / Admin. Trade accepts a mode
-  // ('spot' | 'futures') from the bottom nav.
+  // ('spot' | 'futures') from the bottom nav. A mode-less open (trending
+  // tap, admin close) keeps the current Trade mode instead of resetting it.
   function showView(name, mode) {
     const adminView = el('admin-view');
     if (adminView && !adminView.classList.contains('hidden') && window.AdminPanel) {
@@ -101,13 +103,23 @@
       const n = document.getElementById(id);
       if (n) n.classList.toggle('hidden', id !== name + '-view');
     });
+    let navMode = mode;
+    if (name === 'trade' && !navMode && window.TradeApp && window.TradeApp.getMode) {
+      navMode = window.TradeApp.getMode();
+    }
     document.querySelectorAll('.bn-item').forEach((b) => b.classList.remove('active'));
-    const nav = document.querySelector(`.bn-item[data-view="${name}"]`);
+    // The Trade view has TWO nav items (Spot / Futures): highlight the one
+    // matching the mode. The old selector always took the first
+    // [data-view="trade"] (Spot), so Futures never looked selected.
+    const sel = name === 'trade' && navMode
+      ? `.bn-item[data-view="trade"][data-mode="${navMode}"]`
+      : `.bn-item[data-view="${name}"]`;
+    const nav = document.querySelector(sel);
     if (nav) nav.classList.add('active');
     if (name === 'trade') {
       if (window.TradeApp) {
         window.TradeApp.ensureChart();
-        if (mode) window.TradeApp.setMode(mode);
+        if (navMode) window.TradeApp.setMode(navMode);
       }
     }
     if (name === 'home') loadHome();
