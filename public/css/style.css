@@ -169,13 +169,6 @@ main { max-width: 1080px; margin: 0 auto; }
 .ph-change.num-down { color: var(--red); }
 
 /* ---- Spot / Futures switch ---- */
-.mode-switch {
-  display: flex; gap: 4px;
-  padding: 8px 12px 0;
-  border-bottom: 1px solid var(--border);
-  margin: 0 12px;
-  padding-left: 0; padding-right: 0;
-}
 
 /* ---- chart block ---- */
 .tf-row {
