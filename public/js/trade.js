@@ -763,11 +763,11 @@
   // ---------- Spot / Futures switch + book tabs + indicator chips ----------
   function setMode(mode) {
     state.mode = mode;
-    document.querySelectorAll('.mode-btn').forEach((el) => el.classList.toggle('active', el.dataset.mode === mode));
     document.getElementById('spot-panel').classList.toggle('hidden', mode !== 'spot');
     document.getElementById('futures-panel').classList.toggle('hidden', mode !== 'futures');
-    // Keep the bottom nav in sync when switching via the top Spot/Futures
-    // tabs, so the nav never shows Spot while Futures is open (or reverse).
+    // Keep the bottom nav in sync: the bottom keys are now the ONLY
+    // Spot/Futures switch (the in-view tabs were removed — two switches
+    // controlling one mode kept confusing the nav highlight).
     document.querySelectorAll('.bn-item[data-view="trade"]').forEach((el) => el.classList.toggle('active', el.dataset.mode === mode));
   }
 
@@ -1111,7 +1111,6 @@
 
     document.querySelectorAll('.pair-card').forEach((el) => el.addEventListener('click', () => setSymbol(el.dataset.symbol)));
     document.querySelectorAll('.tf-btn').forEach((el) => el.addEventListener('click', () => setIntervalTf(el.dataset.tf)));
-    document.querySelectorAll('.mode-btn').forEach((el) => el.addEventListener('click', () => setMode(el.dataset.mode)));
     document.querySelectorAll('.tab-btn').forEach((el) => el.addEventListener('click', () => setBookTab(el.dataset.tab)));
     document.getElementById('ma-chip').addEventListener('click', () => setMaVisible(!state.showMA));
     document.getElementById('vol-chip').addEventListener('click', () => setVolVisible(!state.showVol));

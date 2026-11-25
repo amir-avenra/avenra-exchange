@@ -176,12 +176,6 @@ main { max-width: 1080px; margin: 0 auto; }
   margin: 0 12px;
   padding-left: 0; padding-right: 0;
 }
-.mode-btn {
-  background: none; border: none; color: var(--muted);
-  font-size: 15px; font-weight: 700; padding: 8px 14px 8px 2px;
-  border-bottom: 2px solid transparent; margin-bottom: -1px;
-}
-.mode-btn.active { color: var(--text); border-bottom-color: var(--accent); }
 
 /* ---- chart block ---- */
 .tf-row {
