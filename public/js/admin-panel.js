@@ -275,12 +275,22 @@
   }
 
   function enable() {
-    if (enabled) return;
     enabled = true;
+    // The admin latch survives page reloads: Telegram reloads the mini
+    // app often, and a slow/failed first account fetch used to leave the
+    // admin with no Admin button at all. The flag is set on any is_admin
+    // account response and cleared ONLY by a successful account response
+    // that is definitively non-admin — never on a fetch failure. Showing
+    // the button is harmless either way: every /api/admin/* call is
+    // server-gated, so a stale latch only ever opens an error view.
+    try { localStorage.setItem(LATCH_KEY, '1'); } catch {}
     const nav = el('nav-admin');
     if (nav) nav.classList.remove('hidden');
+    if (navWired) return;
+    navWired = true;
     if (nav) nav.addEventListener('click', (e) => { e.preventDefault(); open(); });
-    el('admin-credit-btn').addEventListener('click', credit);
+    const creditBtn = el('admin-credit-btn');
+    if (creditBtn) creditBtn.addEventListener('click', credit);
     window.addEventListener('resize', () => {
       for (const [id, rec] of charts) {
         const host = el('pos-chart-' + id);
@@ -289,5 +299,24 @@
     });
   }
 
-  window.AdminPanel = { enable, open, close };
+  function clearLatch() {
+    try { localStorage.removeItem(LATCH_KEY); } catch {}
+    if (!enabled) return;
+    enabled = false;
+    const nav = el('nav-admin');
+    if (nav) { nav.classList.add('hidden'); nav.classList.remove('active'); }
+  }
+
+  function restoreLatch() {
+    let latched = false;
+    try { latched = localStorage.getItem(LATCH_KEY) === '1'; } catch {}
+    if (latched) enable();
+  }
+
+  const LATCH_KEY = 'avenra_admin';
+  let navWired = false;
+  window.AdminPanel = { enable, open, close, clearLatch, restoreLatch };
+  // Show the Admin item at once on a reload if a previous session latched
+  // it, instead of waiting for the first account fetch to confirm admin.
+  restoreLatch();
 })();

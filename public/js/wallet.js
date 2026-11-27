@@ -12,9 +12,17 @@
       // The Admin nav item must be visible on the Wallet page too, for the
       // admin account: without this the Admin button vanished the moment
       // the admin opened Wallet (this page never had the item at all).
+      // A definitive non-admin response drops the persisted latch; a
+      // failed fetch leaves it alone (see admin-panel.js).
+      const nav = document.getElementById('nav-admin');
       if (account.is_admin) {
-        const nav = document.getElementById('nav-admin');
+        // admin-panel.js is not loaded on this page, so persist the latch
+        // here too — otherwise a Wallet reload never restores the button.
+        try { localStorage.setItem('avenra_admin', '1'); } catch {}
         if (nav) nav.classList.remove('hidden');
+      } else {
+        try { localStorage.removeItem('avenra_admin'); } catch {}
+        if (nav) nav.classList.add('hidden');
       }
       let total = 0;
       // Open positions count at mark-to-market (margin + unrealized PnL),
@@ -58,6 +66,15 @@
       navigator.clipboard?.writeText(id);
       toast('Telegram ID copied: ' + id);
     });
+    // Show the Admin item at once if a previous session latched it,
+    // instead of waiting for the first account fetch (slow tunnel =
+    // no button until the fetch lands).
+    try {
+      if (localStorage.getItem('avenra_admin') === '1') {
+        const nav = document.getElementById('nav-admin');
+        if (nav) nav.classList.remove('hidden');
+      }
+    } catch {}
     refresh();
     setInterval(refresh, 5000);
   });

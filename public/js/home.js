@@ -20,12 +20,16 @@
   // it is enabled from EVERY /api/account fetch (Home load, Profile load,
   // and the Trade view's balance refresh), not from a single startup call
   // that a slow first load can skip. enable() is idempotent, so calling
-  // it on every load is safe — and once enabled it is never hidden again.
-  // The Wallet page links back here with ?view=admin; when that deep link
-  // is present the Admin panel opens once the account check confirms admin.
+  // it on every load is safe. The latch is also persisted on the device
+  // (see admin-panel.js): a reload shows the button at once, and it is
+  // cleared ONLY by a successful account response that is definitively
+  // non-admin — a failed fetch never clears it. The Wallet page links
+  // back here with ?view=admin; when that deep link is present the Admin
+  // panel opens once the account check confirms admin.
   let openAdminOnLoad = false;
   function checkAdmin(account) {
     if (account && account.is_admin && window.AdminPanel) window.AdminPanel.enable();
+    else if (account && window.AdminPanel && window.AdminPanel.clearLatch) window.AdminPanel.clearLatch();
     if (openAdminOnLoad) {
       openAdminOnLoad = false;
       if (account && account.is_admin && window.AdminPanel) window.AdminPanel.open();

@@ -15,11 +15,16 @@ Spot + USDT-margined futures, live Binance market data, manual admin-credited ba
 - **Wallet page** with live USDT valuation
 - **Admin nav is permanent for the admin account** — the Admin item is
   shown on every screen (Home, Trade, Wallet, Profile) and opens the
-  Admin panel from anywhere (`/?view=admin` deep link from Wallet).
+  Admin panel from anywhere (`/?view=admin` deep link from Wallet). The
+  latch is persisted on the device, so a reload shows the button at once
+  instead of waiting for the first account fetch; it is cleared only by
+  a successful account response that is definitively non-admin.
 - **Stable order book + trade feed** — each side always renders a fixed
   number of rows (12 book / 30 feed, padded when the book is thin) and
   the DOM is only rewritten when the content actually changed, so rows
-  never vanish or jump while scrolling.
+  never vanish or jump while scrolling. A failed market poll never
+  clears the book — the last good levels stay until the next success.
+  Totals accumulate from the spread outward, KCEX-style.
 - **Telegram Mini App:** every user is identified by their numeric
   Telegram id (Telegram initData, verified server-side). The admin opens
   the same mini app from their own Telegram account and gets a separate

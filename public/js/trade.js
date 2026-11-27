@@ -625,14 +625,32 @@
   // jumped. Now each side always renders exactly BOOK_ROWS rows (missing
   // levels are padded with empty rows, so the panel height never changes)
   // and the DOM is only touched when the built HTML actually changed.
+  // A failed poll never clears the book either: pollMarket's catch skips
+  // the render, so the last good levels stay on screen until the next
+  // successful poll (the server answers 502 while Binance is unreachable,
+  // so a bad payload can never reach renderBook as an empty book).
   const BOOK_ROWS = 12;
   let lastBookRender = 0;
   function onDepth(data) {
     // Websocket depth payload: { b: [[price, qty], ...], a: [...] }.
     renderBook(data.b || [], data.a || []);
   }
-  function bookRowsHtml(rows) {
-    let html = rows.map(([p, q]) => bookRow(p, q)).join('');
+  // Cumulative totals from the spread outward (KCEX-style): the row
+  // nearest the mid sums only itself; each row further out adds every row
+  // between it and the spread. `nearestFirst` says whether rows[0] is the
+  // row nearest the spread.
+  function cumulativeTotals(rows, nearestFirst) {
+    const totals = new Array(rows.length);
+    let sum = 0;
+    if (nearestFirst) {
+      for (let i = 0; i < rows.length; i++) { sum += Number(rows[i][0]) * Number(rows[i][1]); totals[i] = sum; }
+    } else {
+      for (let i = rows.length - 1; i >= 0; i--) { sum += Number(rows[i][0]) * Number(rows[i][1]); totals[i] = sum; }
+    }
+    return totals;
+  }
+  function bookRowsHtml(rows, totals) {
+    let html = rows.map(([p, q], i) => bookRow(p, q, totals ? totals[i] : undefined)).join('');
     for (let i = rows.length; i < BOOK_ROWS; i++) {
       html += '<div class="book-row"><span></span><span></span><span></span></div>';
     }
@@ -643,16 +661,20 @@
     const now = Date.now();
     if (now - lastBookRender < 250) return; // throttle DOM updates
     lastBookRender = now;
-    const asksTop = (asks || []).slice(0, BOOK_ROWS).reverse();
-    const bidsTop = (bids || []).slice(0, BOOK_ROWS);
+    // Explicit sort — never trust the feed's order: asks ascending, bids
+    // descending, so the best price on each side sits next to the mid line.
+    const asksSorted = [...(asks || [])].sort((a, b) => Number(a[0]) - Number(b[0]));
+    const bidsSorted = [...(bids || [])].sort((a, b) => Number(b[0]) - Number(a[0]));
+    const asksTop = asksSorted.slice(0, BOOK_ROWS).reverse(); // display: farthest -> nearest
+    const bidsTop = bidsSorted.slice(0, BOOK_ROWS); // display: nearest -> farthest
     const asksEl = document.getElementById('asks');
     const bidsEl = document.getElementById('bids');
-    const asksHtml = bookRowsHtml(asksTop);
-    const bidsHtml = bookRowsHtml(bidsTop);
+    const asksHtml = bookRowsHtml(asksTop, cumulativeTotals(asksTop, false));
+    const bidsHtml = bookRowsHtml(bidsTop, cumulativeTotals(bidsTop, true));
     if (asksEl.innerHTML !== asksHtml) asksEl.innerHTML = asksHtml;
     if (bidsEl.innerHTML !== bidsHtml) bidsEl.innerHTML = bidsHtml;
-    const bestAsk = Number((asks || [])[0]?.[0] || 0);
-    const bestBid = Number((bids || [])[0]?.[0] || 0);
+    const bestAsk = Number((asksSorted || [])[0]?.[0] || 0);
+    const bestBid = Number((bidsSorted || [])[0]?.[0] || 0);
     const mid = document.getElementById('book-mid');
     if (bestAsk && bestBid) {
       // No spread is charged anywhere (orders execute at the mark price);
@@ -662,8 +684,9 @@
       mid.className = 'book-mid ' + (midPrice >= (state.lastPrice || midPrice) ? 'num-up' : 'num-down');
     }
   }
-  function bookRow(price, qty) {
-    return `<div class="book-row"><span>${fmtPrice(state.symbol, price)}</span><span>${fmtNum(qty, 4)}</span><span>${fmtUsd(Number(price) * Number(qty))}</span></div>`;
+  function bookRow(price, qty, total) {
+    const t = total == null ? Number(price) * Number(qty) : total;
+    return `<div class="book-row"><span>${fmtPrice(state.symbol, price)}</span><span>${fmtNum(qty, 4)}</span><span>${fmtUsd(t)}</span></div>`;
   }
 
   // ---------- recent trades ----------
