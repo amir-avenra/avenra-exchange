@@ -21,8 +21,15 @@
   // and the Trade view's balance refresh), not from a single startup call
   // that a slow first load can skip. enable() is idempotent, so calling
   // it on every load is safe — and once enabled it is never hidden again.
+  // The Wallet page links back here with ?view=admin; when that deep link
+  // is present the Admin panel opens once the account check confirms admin.
+  let openAdminOnLoad = false;
   function checkAdmin(account) {
     if (account && account.is_admin && window.AdminPanel) window.AdminPanel.enable();
+    if (openAdminOnLoad) {
+      openAdminOnLoad = false;
+      if (account && account.is_admin && window.AdminPanel) window.AdminPanel.open();
+    }
   }
 
   async function loadHome() {
@@ -164,7 +171,10 @@
       });
     }
     // ?mode=spot|futures (e.g. from the Wallet page) opens the Trade view.
+    // ?view=admin (from the Wallet page's Admin item) opens the Admin panel
+    // once the account check confirms the admin (see checkAdmin above).
     const params = new URLSearchParams(location.search);
+    if (params.get('view') === 'admin') openAdminOnLoad = true;
     const mode = params.get('mode');
     if (mode === 'spot' || mode === 'futures') showView('trade', mode);
     else showView('home');

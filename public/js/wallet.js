@@ -9,6 +9,13 @@
         api('/api/futures/positions'),
       ]);
       const balances = account.balances;
+      // The Admin nav item must be visible on the Wallet page too, for the
+      // admin account: without this the Admin button vanished the moment
+      // the admin opened Wallet (this page never had the item at all).
+      if (account.is_admin) {
+        const nav = document.getElementById('nav-admin');
+        if (nav) nav.classList.remove('hidden');
+      }
       let total = 0;
       // Open positions count at mark-to-market (margin + unrealized PnL),
       // same as the header total: the margin left the USDT balance at open.

@@ -13,6 +13,13 @@ Spot + USDT-margined futures, live Binance market data, manual admin-credited ba
   0.01% taker fee (KCEX, no spread — orders execute at the mark price),
   estimated liquidation price, automatic liquidation, live unrealized PnL & ROE
 - **Wallet page** with live USDT valuation
+- **Admin nav is permanent for the admin account** — the Admin item is
+  shown on every screen (Home, Trade, Wallet, Profile) and opens the
+  Admin panel from anywhere (`/?view=admin` deep link from Wallet).
+- **Stable order book + trade feed** — each side always renders a fixed
+  number of rows (12 book / 30 feed, padded when the book is thin) and
+  the DOM is only rewritten when the content actually changed, so rows
+  never vanish or jump while scrolling.
 - **Telegram Mini App:** every user is identified by their numeric
   Telegram id (Telegram initData, verified server-side). The admin opens
   the same mini app from their own Telegram account and gets a separate

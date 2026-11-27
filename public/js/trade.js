@@ -619,22 +619,38 @@
   }
 
   // ---------- order book ----------
+  // The book used to rewrite its whole DOM on every poll (2s) and every
+  // live depth tick: rows vanished and reappeared under the user's scroll,
+  // and a thin book (fewer than 12 levels) shrank the panel so the page
+  // jumped. Now each side always renders exactly BOOK_ROWS rows (missing
+  // levels are padded with empty rows, so the panel height never changes)
+  // and the DOM is only touched when the built HTML actually changed.
+  const BOOK_ROWS = 12;
   let lastBookRender = 0;
   function onDepth(data) {
     // Websocket depth payload: { b: [[price, qty], ...], a: [...] }.
     renderBook(data.b || [], data.a || []);
+  }
+  function bookRowsHtml(rows) {
+    let html = rows.map(([p, q]) => bookRow(p, q)).join('');
+    for (let i = rows.length; i < BOOK_ROWS; i++) {
+      html += '<div class="book-row"><span></span><span></span><span></span></div>';
+    }
+    return html;
   }
   // Shared renderer for both shapes: websocket {b, a} and REST {bids, asks}.
   function renderBook(bids, asks) {
     const now = Date.now();
     if (now - lastBookRender < 250) return; // throttle DOM updates
     lastBookRender = now;
-    const asksTop = (asks || []).slice(0, 12).reverse();
-    const bidsTop = (bids || []).slice(0, 12);
+    const asksTop = (asks || []).slice(0, BOOK_ROWS).reverse();
+    const bidsTop = (bids || []).slice(0, BOOK_ROWS);
     const asksEl = document.getElementById('asks');
     const bidsEl = document.getElementById('bids');
-    asksEl.innerHTML = asksTop.map(([p, q]) => bookRow(p, q)).join('');
-    bidsEl.innerHTML = bidsTop.map(([p, q]) => bookRow(p, q)).join('');
+    const asksHtml = bookRowsHtml(asksTop);
+    const bidsHtml = bookRowsHtml(bidsTop);
+    if (asksEl.innerHTML !== asksHtml) asksEl.innerHTML = asksHtml;
+    if (bidsEl.innerHTML !== bidsHtml) bidsEl.innerHTML = bidsHtml;
     const bestAsk = Number((asks || [])[0]?.[0] || 0);
     const bestBid = Number((bids || [])[0]?.[0] || 0);
     const mid = document.getElementById('book-mid');
@@ -651,7 +667,14 @@
   }
 
   // ---------- recent trades ----------
+  // Same stability rule as the book: the feed used to rewrite its whole
+  // DOM on every live trade (several times a second), so rows flickered
+  // under a scroll. It now renders a fixed FEED_ROWS rows (padded), only
+  // touches the DOM when the content changed, and live-trade renders are
+  // throttled to 500ms (the 2s poll still refreshes it).
+  const FEED_ROWS = 30;
   const feed = [];
+  let lastFeedRender = 0;
   async function loadRecentTrades() {
     try {
       const raw = await marketRest(`/api/market/aggTrades?symbol=${state.symbol}&limit=30`);
@@ -664,17 +687,25 @@
   }
   function onTrade(t) {
     feed.unshift({ price: Number(t.p), qty: Number(t.q), time: t.T, sell: t.m });
-    if (feed.length > 30) feed.pop();
-    renderFeed();
+    if (feed.length > FEED_ROWS) feed.pop();
+    const now = Date.now();
+    if (now - lastFeedRender >= 500) {
+      lastFeedRender = now;
+      renderFeed();
+    }
   }
   function renderFeed() {
     const el = document.getElementById('trade-feed');
     if (!el) return;
-    el.innerHTML = feed.map((t) => {
+    let html = feed.map((t) => {
       const cls = t.sell ? 'num-down' : 'num-up';
       const time = new Date(t.time).toLocaleTimeString('en-GB');
       return `<div class="book-row"><span class="${cls}">${fmtPrice(state.symbol, t.price)}</span><span>${fmtNum(t.qty, 4)}</span><span>${time}</span></div>`;
     }).join('');
+    for (let i = feed.length; i < FEED_ROWS; i++) {
+      html += '<div class="book-row"><span></span><span></span><span></span></div>';
+    }
+    if (el.innerHTML !== html) el.innerHTML = html;
   }
 
   // ---------- live updates via REST polling (primary path) ----------
