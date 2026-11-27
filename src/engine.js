@@ -1,7 +1,7 @@
 // Trading engine: limit-order matching + futures auto-liquidation.
 // Runs on every price tick (see server.js). Pure-ish functions are exported
 // for testing (liquidationPrice / unrealizedPnl live in money.js).
-const { D, FEE_RATE, unrealizedPnl } = require('./money');
+const { D, SPOT_FEE_RATE, FUTURES_TAKER_FEE_RATE, unrealizedPnl } = require('./money');
 const tradeEvents = require('./events');
 
 function baseAsset(symbol) {
@@ -27,7 +27,7 @@ async function matchLimitOrders(store, prices) {
     const qty = D(order.qty);
     const price = D(order.price);
     const notional = qty.mul(price);
-    const fee = notional.mul(FEE_RATE);
+    const fee = notional.mul(SPOT_FEE_RATE); // KCEX spot maker fee is 0%
     try {
       if (order.side === 'buy') {
         await store.adjustBalance(order.uid, baseAsset(order.symbol), qty.toString());
@@ -67,7 +67,7 @@ async function checkLiquidations(store, prices) {
 
     const qty = D(pos.qty);
     const pnl = unrealizedPnl(pos, pos.liquidation_price); // pnl at liq price
-    const fee = qty.mul(D(pos.liquidation_price)).mul(FEE_RATE);
+    const fee = qty.mul(D(pos.liquidation_price)).mul(FUTURES_TAKER_FEE_RATE); // KCEX taker 0.01%
     const credit = D(pos.margin).plus(pnl).minus(fee);
     const creditClamped = credit.isNegative() ? D(0) : credit;
     try {

@@ -16,6 +16,15 @@
     if (big) big.textContent = letter;
   }
 
+  // The Admin nav item must be permanently visible for the admin account:
+  // it is enabled from EVERY /api/account fetch (Home load, Profile load,
+  // and the Trade view's balance refresh), not from a single startup call
+  // that a slow first load can skip. enable() is idempotent, so calling
+  // it on every load is safe — and once enabled it is never hidden again.
+  function checkAdmin(account) {
+    if (account && account.is_admin && window.AdminPanel) window.AdminPanel.enable();
+  }
+
   async function loadHome() {
     try {
       const [account, pricesData, positions] = await Promise.all([
@@ -24,12 +33,20 @@
         api('/api/futures/positions'),
       ]);
       renderIdentity(account);
+      checkAdmin(account);
       const prices = pricesData.prices || {};
       let total = Number((account.balances || {}).USDT || 0);
       for (const [asset, amount] of Object.entries(account.balances || {})) {
         if (asset === 'USDT') continue;
         const p = Number(prices[asset + 'USDT'] || 0);
         if (p) total += Number(amount) * p;
+      }
+      // Open positions count at mark-to-market: the locked margin was
+      // debited from USDT when the position opened, so add margin +
+      // unrealized PnL back in — otherwise the total drops the moment a
+      // trade opens and never shows its live profit/loss.
+      for (const p of positions.open || []) {
+        total += Number(p.margin || 0) + Number(p.unrealized_pnl || 0);
       }
       el('home-total-value').textContent = fmtUsd(total);
       const today = new Date().toDateString();
@@ -74,6 +91,7 @@
         api('/api/futures/positions'),
       ]);
       renderIdentity(account);
+      checkAdmin(account);
       const u = account.tg_user || {};
       el('profile-name').textContent = u.username ? '@' + u.username : (u.first_name || 'Trader');
       el('profile-tgid').textContent = u.id ? String(u.id) : '—';

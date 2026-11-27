@@ -3,12 +3,18 @@
 (function () {
   async function refresh() {
     try {
-      const [account, prices] = await Promise.all([
+      const [account, prices, positions] = await Promise.all([
         api('/api/account'),
         api('/api/prices'),
+        api('/api/futures/positions'),
       ]);
       const balances = account.balances;
       let total = 0;
+      // Open positions count at mark-to-market (margin + unrealized PnL),
+      // same as the header total: the margin left the USDT balance at open.
+      for (const p of (positions.open || [])) {
+        total += Number(p.margin || 0) + Number(p.unrealized_pnl || 0);
+      }
       const rows = ASSETS.map((asset) => {
         const amount = Number(balances[asset] || 0);
         const price = asset === 'USDT' ? 1 : Number(prices.prices[asset + 'USDT'] || 0);

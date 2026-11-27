@@ -8,8 +8,9 @@ Spot + USDT-margined futures, live Binance market data, manual admin-credited ba
 - **Live chart** (lightweight-charts via CDN): MA5/MA10/MA30, volume panel,
   toggleable MACD, timeframes 1m / 5m / 15m / 30m / 1h / 4h / 1d
 - **Real order book + recent trades** from Binance public streams
-- **Spot:** Market & Limit orders, 0.1% fee, open orders with cancel, trade history
+- **Spot:** Market & Limit orders, 0% fee (KCEX), open orders with cancel, trade history
 - **Futures:** USDT-margined perpetuals, Long/Short, 1x–50x, isolated margin,
+  0.01% taker fee (KCEX, no spread — orders execute at the mark price),
   estimated liquidation price, automatic liquidation, live unrealized PnL & ROE
 - **Wallet page** with live USDT valuation
 - **Telegram Mini App:** every user is identified by their numeric

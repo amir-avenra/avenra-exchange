@@ -6,7 +6,7 @@
 // Admin rights exist ONLY via a verified Telegram identity whose id is
 // in TELEGRAM_ADMIN_IDS.
 const express = require('express');
-const { D, FEE_RATE, feeOf, liquidationPrice, unrealizedPnl, roe } = require('./money');
+const { D, SPOT_FEE_RATE, FUTURES_TAKER_FEE_RATE, liquidationPrice, unrealizedPnl, roe } = require('./money');
 const { SYMBOLS, HOSTS } = require('./prices');
 const engine = require('./engine');
 const { verifyInitData, isAdminId } = require('./telegram');
@@ -237,7 +237,7 @@ function createRouter(store, prices) {
 
       const price = D(mark);
       const notional = qty.mul(price);
-      const fee = notional.mul(FEE_RATE);
+      const fee = notional.mul(SPOT_FEE_RATE); // KCEX spot fee is 0%
       // Balances BEFORE the trade, so the admin alert can say what % of
       // the user's balance this trade used.
       const before = await store.getBalances(uid);
@@ -281,7 +281,7 @@ function createRouter(store, prices) {
     const limitPrice = parseAmount(req.body.price, 'price');
     if (!limitPrice) return res.status(400).json({ error: 'price must be a positive number for limit orders' });
     const notional = qty.mul(limitPrice);
-    const fee = notional.mul(FEE_RATE);
+    const fee = notional.mul(SPOT_FEE_RATE); // KCEX spot fee is 0%
 
     let order;
     if (side === 'buy') {
@@ -371,11 +371,14 @@ function createRouter(store, prices) {
     const entry = D(mark);
     const notional = qty.mul(entry);
     const margin = notional.div(leverage);
+    // KCEX taker fee (0.01% of notional) on a market open, debited with
+    // the margin so the position itself still holds exactly `margin`.
+    const fee = notional.mul(FUTURES_TAKER_FEE_RATE);
     await store.ensureAccount(uid);
     // Balance BEFORE the margin is locked, for the admin alert's % figure.
     const before = await store.getBalances(uid);
     try {
-      await store.adjustBalance(uid, 'USDT', margin.neg().toString());
+      await store.adjustBalance(uid, 'USDT', margin.plus(fee).neg().toString());
     } catch {
       return res.status(400).json({ error: 'Insufficient USDT balance for margin' });
     }
@@ -407,7 +410,8 @@ function createRouter(store, prices) {
     if (!mark) return res.status(503).json({ error: 'Price unavailable, try again in a moment' });
 
     const pnl = unrealizedPnl(position, mark);
-    const fee = D(position.qty).mul(D(mark)).mul(FEE_RATE);
+    // KCEX taker fee (0.01% of the closing notional) — was 0.1%.
+    const fee = D(position.qty).mul(D(mark)).mul(FUTURES_TAKER_FEE_RATE);
     const realized = pnl.minus(fee);
     const credit = D(position.margin).plus(realized);
     const creditClamped = credit.isNegative() ? D(0) : credit;

@@ -19,6 +19,7 @@
     balances: {},
     serverPrices: {},
     openPositions: [], // open futures positions for the current uid
+    openValue: 0, // mark-to-market value of open positions: margin + uPnL
     recentTrades: [], // own filled trades (for B/S chart markers)
     spotSide: 'buy',
     spotType: 'market',
@@ -80,6 +81,12 @@
   let macdChart, macdHist, macdDif, macdDea;
 
   function initChart() {
+    // Never build the chart twice on the same element: the ?mode= startup
+    // path calls this once via showView('trade') and once directly below,
+    // and a second createChart on the same container leaves a blank chart
+    // stacked over the live one (fullscreen's resize used to "fix" it by
+    // repainting the top, empty canvas).
+    if (chart) return;
     const el = document.getElementById('chart');
     if (typeof LightweightCharts === 'undefined') {
       // Chart library missing (e.g. CDN blocked): trading still works,
@@ -198,7 +205,40 @@
       // partway). Repaint now instead of leaving a blank chart.
       if (candleSeries && state.klines.length && !seriesHasData()) {
         paintKlines();
+        chart.timeScale().fitContent();
       }
+    }
+    // Deferred re-fit: in the Telegram WebView the layout can still be
+    // settling when the view opens (fonts, viewport resize), so a chart
+    // created at a stale size stays blank until something resizes it —
+    // fullscreen used to be the only thing that did. Re-measure on the
+    // next frame and repaint if the series is still empty.
+    requestAnimationFrame(() => {
+      const el = document.getElementById('chart');
+      if (!chart || !el) return;
+      if (document.getElementById('trade-view').classList.contains('hidden')) return;
+      chart.applyOptions({ width: el.clientWidth, height: el.clientHeight });
+      if (candleSeries && state.klines.length && !seriesHasData()) {
+        paintKlines();
+        chart.timeScale().fitContent();
+      }
+    });
+  }
+
+  // While the Trade view is visible, keep the chart honest: if the series
+  // ever ends up empty while candles are loaded (a failed first paint, a
+  // stalled resize), repaint it here instead of waiting for the user to
+  // notice a blank chart. Also re-apply the container size every tick so
+  // a stale-size canvas can never stick.
+  function chartWatchdog() {
+    const view = document.getElementById('trade-view');
+    if (!view || view.classList.contains('hidden')) return;
+    const el = document.getElementById('chart');
+    if (!chart || !el) return;
+    chart.applyOptions({ width: el.clientWidth, height: el.clientHeight });
+    if (candleSeries && state.klines.length && !seriesHasData()) {
+      paintKlines();
+      chart.timeScale().fitContent();
     }
   }
 
@@ -599,8 +639,10 @@
     const bestBid = Number((bids || [])[0]?.[0] || 0);
     const mid = document.getElementById('book-mid');
     if (bestAsk && bestBid) {
+      // No spread is charged anywhere (orders execute at the mark price);
+      // the mid price is shown alone so it never reads as a cost.
       const midPrice = (bestAsk + bestBid) / 2;
-      mid.textContent = `${fmtPrice(state.symbol, midPrice)}  ·  Spread ${fmtPrice(state.symbol, bestAsk - bestBid)}`;
+      mid.textContent = fmtPrice(state.symbol, midPrice);
       mid.className = 'book-mid ' + (midPrice >= (state.lastPrice || midPrice) ? 'num-up' : 'num-down');
     }
   }
@@ -686,7 +728,11 @@
   }
 
   function renderBalances() {
-    let total = 0;
+    // Total balance = wallet balances at mark + the mark-to-market value
+    // of open positions (locked margin + unrealized PnL). The margin was
+    // debited from USDT when the position opened, so without this the
+    // total understates the account while a trade is open.
+    let total = state.openValue || 0;
     for (const [asset, amount] of Object.entries(state.balances)) total += assetValue(asset, amount);
     const totalEl = document.getElementById('total-balance-value');
     if (totalEl) totalEl.textContent = fmtNum(total, 2);
@@ -834,7 +880,7 @@
     const limitPrice = Number(document.getElementById('spot-price').value || 0);
     const price = state.spotType === 'limit' ? limitPrice : (state.lastPrice || 0);
     const total = qty * price;
-    const fee = total * 0.001;
+    const fee = 0; // KCEX spot fee is 0%
     const totalEl = document.getElementById('spot-total');
     if (totalEl) totalEl.textContent = price ? `${fmtUsd(total)}  ·  Fee ${fmtUsd(fee)}` : '—';
     const btn = document.getElementById('spot-submit');
@@ -929,6 +975,8 @@
     if (availEl) availEl.textContent = `Available: ${fmtNum(Number(state.balances.USDT || 0), 2)} USDT`;
     const marginEl = document.getElementById('fut-margin');
     if (marginEl) marginEl.textContent = margin ? fmtUsd(margin) : '—';
+    const feeEl = document.getElementById('fut-fee');
+    if (feeEl) feeEl.textContent = (mark && qty) ? fmtUsd(qty * mark * 0.0001) : '—'; // KCEX taker 0.01%
     const liqEl = document.getElementById('fut-liq');
     if (liqEl) liqEl.textContent = liq ? fmtPrice(state.symbol, liq) : '—';
     const entryEl = document.getElementById('fut-entry');
@@ -1033,6 +1081,11 @@
     try {
       const data = await api('/api/futures/positions');
       state.openPositions = data.open || [];
+      // Mark-to-market value of the open positions, for the Total balance
+      // (header + Home): locked margin + unrealized PnL at the live mark.
+      state.openValue = (data.open || []).reduce(
+        (s, p) => s + Number(p.margin || 0) + Number(p.unrealized_pnl || 0), 0);
+      renderBalances();
       refreshPositionOverlay();
       const el = document.getElementById('positions-body');
       const rows = [];
@@ -1174,6 +1227,17 @@
     setInterval(refreshPositions, 2000);
     setInterval(refreshTabPrices, 10000);
     setInterval(() => { refreshOrders(); refreshTrades(); }, 5000);
+    setInterval(chartWatchdog, 3000);
+    // Entering/exiting fullscreen resizes #chart: re-fit the chart to the
+    // new size (the ResizeObserver covers it too; this is the belt to its
+    // braces, and it also repaints a series that ended up empty).
+    document.addEventListener('fullscreenchange', () => {
+      chartWatchdog();
+      if (chart && candleSeries && state.klines.length && !seriesHasData()) {
+        paintKlines();
+        chart.timeScale().fitContent();
+      }
+    });
   }
 
   // Public handle for the Home/Profile views: open Trade, switch the

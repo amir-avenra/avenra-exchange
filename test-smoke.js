@@ -119,9 +119,9 @@ async function api(path, opts = {}) {
     check('market buy filled', buy.filled === true && buy.trade);
     const balAfterBuy = await api('/api/balances', { user: true });
     check('BTC balance after buy', Math.abs(Number(balAfterBuy.balances.BTC) - 0.01) < 1e-9, JSON.stringify(balAfterBuy.balances));
-    const expectedUsdt = 10000 - 0.01 * btcPrice * 1.001;
+    const expectedUsdt = 10000 - 0.01 * btcPrice;
     check(
-      'USDT debited with 0.1% fee',
+      'USDT debited with 0% spot fee (KCEX)',
       Math.abs(Number(balAfterBuy.balances.USDT) - expectedUsdt) < 0.05,
       `expected ~${expectedUsdt.toFixed(2)} got ${balAfterBuy.balances.USDT}`
     );
@@ -151,12 +151,20 @@ async function api(path, opts = {}) {
     check('crossing limit order fills immediately', limitFill.filled === true, JSON.stringify(limitFill.order));
 
     // Futures: open long 10x, check liq price math, then close
+    const balBeforeFut = await api('/api/balances', { user: true });
     const fut = await api('/api/futures/open', {
       user: true,
       method: 'POST',
       body: JSON.stringify({ symbol: 'BTCUSDT', side: 'long', leverage: 10, qty: '0.01' }),
     });
     check('futures long opened', fut.position && fut.position.status === 'open');
+    // KCEX taker fee on open: the debit is margin + 0.01% of notional.
+    // Computed from the returned entry price, so no price-movement noise.
+    const futEntry = Number(fut.position.entry_price);
+    const futOpenDebit = 0.01 * futEntry / 10 + 0.01 * futEntry * 0.0001;
+    check('futures open debits margin + 0.01% taker fee (KCEX)',
+      Math.abs(Number(fut.balances.USDT) - (Number(balBeforeFut.balances.USDT) - futOpenDebit)) < 0.05,
+      `expected debit ~${futOpenDebit.toFixed(4)} got balance ${fut.balances.USDT}`);
     const expectedLiq = btcPrice * (1 - 1 / 10 + 0.005);
     check(
       'liquidation price ≈ entry*(1-1/10+0.005)',
@@ -175,12 +183,20 @@ async function api(path, opts = {}) {
       adminPositions.positions[0].unrealized_pnl !== undefined &&
       adminPositions.positions[0].symbol === 'BTCUSDT',
       JSON.stringify(adminPositions.positions[0]));
+    const markBeforeClose = Number((await api('/api/prices')).prices.BTCUSDT);
     const closed = await api('/api/futures/close', {
       user: true,
       method: 'POST',
       body: JSON.stringify({ positionId: fut.position.id }),
     });
     check('futures position closed', closed.position.status === 'closed' && closed.realized_pnl !== undefined);
+    // KCEX taker fee on close: realized = (mark-entry)*qty - 0.01% of
+    // the closing notional. Tolerance covers seconds of price movement;
+    // the old 0.1% fee would sit ~$0.53 lower on this notional.
+    const expectedRealized = (markBeforeClose - futEntry) * 0.01 - 0.01 * markBeforeClose * 0.0001;
+    check('futures close charges 0.01% taker fee (KCEX)',
+      Math.abs(Number(closed.realized_pnl) - expectedRealized) < 0.3,
+      `expected ~${expectedRealized.toFixed(2)} got ${closed.realized_pnl}`);
 
     // Trade history
     const trades = await api('/api/trades?symbol=BTCUSDT', { user: true });
