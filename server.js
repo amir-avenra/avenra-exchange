@@ -13,6 +13,14 @@ const { startBot } = require('./src/bot');
 
 const PORT = Number(process.env.PORT || process.env.SERVER_PORT || 3000);
 
+// Cache-busting version: the git commit the server was deployed from, so a
+// phone never runs stale JS after a `git pull` (Telegram's WebView caches
+// aggressively). Falls back to the server start time when git is unavailable.
+let APP_VERSION = String(Date.now());
+try {
+  APP_VERSION = require('child_process').execSync('git rev-parse --short HEAD', { cwd: __dirname, encoding: 'utf8', timeout: 5000 }).trim() || APP_VERSION;
+} catch { /* keep the timestamp fallback */ }
+
 async function main() {
   const store = getStore();
   try {
@@ -34,7 +42,30 @@ async function main() {
 function startServer(store) {
   const app = express();
   app.use(express.json({ limit: '256kb' }));
-  app.use(express.static(path.join(__dirname, 'public')));
+
+  // Versioned app assets (?v=<commit>) are immutable: cache them hard.
+  app.use((req, res, next) => {
+    if (req.query.v && (req.path.startsWith('/js/') || req.path.startsWith('/css/'))) {
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    }
+    next();
+  });
+
+  // The HTML shells carry the version token: serve them fresh (revalidate
+  // every open) with the current version injected, so the phone always
+  // requests the current JS/CSS URLs after a deploy.
+  const PUBLIC_DIR = path.join(__dirname, 'public');
+  const fs = require('fs');
+  app.get(['/', '/index.html', '/wallet.html'], (req, res, next) => {
+    const file = req.path === '/wallet.html' ? 'wallet.html' : 'index.html';
+    fs.readFile(path.join(PUBLIC_DIR, file), 'utf8', (err, html) => {
+      if (err) return next(err);
+      res.setHeader('Cache-Control', 'no-cache');
+      res.type('html').send(html.split('__APP_VERSION__').join(APP_VERSION));
+    });
+  });
+
+  app.use(express.static(PUBLIC_DIR));
 
   // Health endpoint for uptime monitors (UptimeRobot etc.).
   app.get('/health', (req, res) => {
