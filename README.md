@@ -25,6 +25,13 @@ Spot + USDT-margined futures, live Binance market data, manual admin-credited ba
   never vanish or jump while scrolling. A failed market poll never
   clears the book — the last good levels stay until the next success.
   Totals accumulate from the spread outward, KCEX-style.
+- **Cache-busting** — the server injects its deploy version (git short
+  SHA, or start time) into every local JS/CSS URL as `?v=<version>` and
+  serves the HTML shells with `Cache-Control: no-cache`, while versioned
+  assets get a 1-year immutable cache. Telegram's WebView caches
+  aggressively, so without this a phone can keep running stale JS after
+  a `git pull`. No manual version bump is needed: the version follows
+  the git HEAD automatically.
 - **Telegram Mini App:** every user is identified by their numeric
   Telegram id (Telegram initData, verified server-side). The admin opens
   the same mini app from their own Telegram account and gets a separate
